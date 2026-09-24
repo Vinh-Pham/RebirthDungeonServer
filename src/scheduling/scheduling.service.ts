@@ -8,6 +8,8 @@ export type ScheduledInvocation = Pick<
 
 @Injectable()
 export class SchedulingService {
+  // Run this schdule using:
+  // curl 'http://localhost:8787/cdn-cgi/local/scheduled?cron=*+*+*+*+*&format=json'
   async run(invocation: ScheduledInvocation): Promise<void> {
     switch (invocation.cron) {
       case EXAMPLE_CRON:
