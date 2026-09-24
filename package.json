@@ -17,7 +17,7 @@
     "worker:dev": "wrangler dev",
     "worker:dry-run": "wrangler deploy --dry-run",
     "worker:deploy": "wrangler deploy",
-    "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
+    "format": "prettier --write \"src/**/*.{ts,tsx}\" \"test/**/*.ts\"",
     "start": "nest start",
     "start:dev": "nest start --watch",
     "start:debug": "nest start --debug --watch",
@@ -29,7 +29,8 @@
     "test:debug": "vitest --inspect-brk --no-file-parallelism",
     "test:e2e": "vitest run --config ./vitest.config.e2e.ts",
     "test:auth": "npm run build && node --test test/auth.integration.mjs",
-    "email:test": "npm run build && node dist/email/email-test.js"
+    "email:test": "npm run build && node dist/email/email-test.js",
+    "email:dev": "email dev --dir src/email/templates --port 3001"
   },
   "dependencies": {
     "@fastify/static": "^10.1.4",
@@ -47,6 +48,9 @@
     "dotenv": "^18.0.3",
     "drizzle-orm": "^1.0.0-rc.4",
     "keyv": "^5.6.0",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
+    "react-email": "^6.11.0",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.1",
     "zod": "^4.6.5"
@@ -56,7 +60,10 @@
     "@nestjs/mau": "^0.2.6",
     "@nestjs/schematics": "^12.0.0",
     "@nestjs/testing": "^12.0.1",
+    "@react-email/ui": "^6.11.0",
     "@types/node": "^24.0.0",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
     "@vitest/coverage-v8": "^4.1.2",
     "drizzle-kit": "^1.0.0-rc.4",
     "oxlint": "^1.58.0",

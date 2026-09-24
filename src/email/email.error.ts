@@ -1,4 +1,5 @@
 export type EmailErrorCode =
+  | 'TEMPLATE_RENDER_FAILED'
   | 'CONFIGURATION'
   | 'INVALID_MESSAGE'
   | 'REJECTED'
@@ -8,6 +9,7 @@ export type EmailErrorCode =
   | 'UNCERTAIN_OUTCOME';
 
 const messages: Record<EmailErrorCode, string> = {
+  TEMPLATE_RENDER_FAILED: 'Email template could not be rendered',
   CONFIGURATION: 'Email configuration is missing or invalid',
   INVALID_MESSAGE: 'Email message is invalid',
   REJECTED: 'Email provider rejected the request',

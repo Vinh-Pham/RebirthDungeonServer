@@ -1,7 +1,10 @@
+import { renderEmailTemplate } from './render-email-template.js';
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { EmailSendError } from './email.error.js';
 import {
   emailMessageSchema,
+  emailEnvelopeSchema,
+  type EmailTemplateMessage,
   type EmailMessage,
   type EmailSendResult,
 } from './email.schemas.js';
@@ -13,6 +16,16 @@ export class EmailService {
   constructor(
     @Inject(EMAIL_TRANSPORT) private readonly transport: EmailTransport,
   ) {}
+
+  async sendTemplate({
+    template,
+    ...envelope
+  }: EmailTemplateMessage): Promise<EmailSendResult> {
+    const input = emailEnvelopeSchema.safeParse(envelope);
+    if (!input.success) throw new EmailSendError('INVALID_MESSAGE');
+    const content = await renderEmailTemplate(template);
+    return this.send({ ...input.data, ...content });
+  }
 
   async send(message: EmailMessage): Promise<EmailSendResult> {
     const input = emailMessageSchema.safeParse(message);

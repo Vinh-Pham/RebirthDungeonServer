@@ -276,7 +276,7 @@ The strict Zod input accepts one recipient, a subject, nonempty text and HTML, a
 
 `send()` returns `{ delivered, queued, permanentBounces, suppressedRecipients, messageId? }`; each outcome field contains recipient addresses. Queued means accepted for later delivery. Bounces and suppression are reported as outcomes even when the provider returns HTTP 200. Callers must handle them rather than equating a resolved promise with delivery.
 
-Errors are `EmailSendError` instances with a stable `code`, optional HTTP `status`, and numeric `providerCodes`. Codes are `CONFIGURATION`, `INVALID_MESSAGE`, `REJECTED`, `AUTHORIZATION`, `RATE_LIMITED`, `PROVIDER_FAILURE`, and `UNCERTAIN_OUTCOME`. Raw provider messages and causes are not propagated. A timeout, broken connection, or unusable successful response can leave delivery uncertain. Sends have a 10-second timeout and no automatic retry; retrying may duplicate an accepted email. Logs contain outcome counts, duration, and safe error codes, never recipient addresses, subjects, bodies, or credentials. Do not log the returned recipient arrays.
+Errors are `EmailSendError` instances with a stable `code`, optional HTTP `status`, and numeric `providerCodes`. Codes are `CONFIGURATION`, `INVALID_MESSAGE`, `REJECTED`, `AUTHORIZATION`, `RATE_LIMITED`, `PROVIDER_FAILURE`, and `UNCERTAIN_OUTCOME`, and `TEMPLATE_RENDER_FAILED`. Raw provider messages and causes are not propagated. A timeout, broken connection, or unusable successful response can leave delivery uncertain. Sends have a 10-second timeout and no automatic retry; retrying may duplicate an accepted email. Logs contain outcome counts, duration, and safe error codes, never recipient addresses, subjects, bodies, or credentials. Do not log the returned recipient arrays.
 
 ### Manual delivery test
 
@@ -288,4 +288,39 @@ npm run email:test -- --to you@your-domain.com
 
 This builds the app and starts only the email module, so no D1/KV connection or JWT configuration is needed. It sends a fixed text-and-HTML message and prints outcome counts. Queued or delivered results exit successfully; errors, permanent bounces, and suppression exit unsuccessfully. Confirm arrival in the inbox and inspect SPF/DKIM/DMARC results in the received message; queued status alone is not delivery confirmation.
 
-Automated tests use fake transports or mocked fetch responses and never send real email. Existing app/auth tests supply dummy email configuration and reject unexpected sends. Templates, attachments, multiple recipients, queues, delivery webhooks, email verification, and password resets are not part of this module.
+Automated tests use fake transports or mocked fetch responses and never send real email. Existing app/auth tests supply dummy email configuration and reject unexpected sends. Attachments, multiple recipients, queues, delivery webhooks, email verification, and password resets are not part of this module.
+
+## React Email templates
+
+Templates live in `src/email/templates/` as `.tsx` components. The sample `test-email.tsx` includes a preview snippet, email-compatible components, inline styles, and an optional `recipientName`. React Email rendering runs on the Nest server before Cloudflare receives the resulting HTML and plain text.
+
+Use `EmailService.sendTemplate()` from a service whose module imports `EmailModule`:
+
+```ts
+import { createElement } from 'react';
+import TestEmail, { TEST_EMAIL_SUBJECT } from './email/templates/test-email.js';
+
+await this.email.sendTemplate({
+  to: 'recipient@example.com',
+  subject: TEST_EMAIL_SUBJECT,
+  template: createElement(TestEmail, { recipientName: 'Adventurer' }),
+});
+```
+
+The service validates the envelope, renders HTML once, derives plain text with `toPlainText()`, and delegates to the same validated `send()` method and Cloudflare transport. It returns the existing typed delivery result. Template rendering failures raise `TEMPLATE_RENDER_FAILED` before sending; the original error and props are not exposed. `send({ to, subject, html, text })` remains available for callers that already have content.
+
+### Preview and test
+
+```bash
+# Local template preview; does not need Cloudflare credentials or send email
+npm run email:dev
+
+# Real send using the sample template (requires email configuration)
+npm run email:test -- --to you@your-domain.com
+```
+
+The preview runs at [http://localhost:3001](http://localhost:3001), separately from Nest on port 3000. The React Email CLI and preview UI are installed in the project; preview artifacts are ignored by Git. The test-email command now renders the sample template rather than embedding raw HTML.
+
+For a new template, add a default-exported component with typed props under `src/email/templates/` and provide `PreviewProps` for realistic, non-sensitive sample data. Keep helpers outside that folder so they do not appear as templates in the preview. Use the installed `react-email` package for components and rendering. Interpolate dynamic text through JSX so React escapes it; avoid raw HTML injection. Use inline, email-compatible styles and absolute URLs for any links or images. Keep sending/network calls out of components and do not place credentials or real recipient data in preview props.
+
+The Nest TypeScript configuration supports JSX with `react-jsx`, and the compiled templates are included in `dist/email/templates/`. Node.js can render them without a frontend runtime or a separate template-file copy step. Automated tests render the template, check HTML/text content and escaping, and exercise `sendTemplate()` through a fake transport without sending email. See the [React Email rendering documentation](https://react.email/docs/utilities/render).

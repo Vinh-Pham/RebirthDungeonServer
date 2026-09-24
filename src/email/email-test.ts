@@ -1,3 +1,5 @@
+import { createElement } from 'react';
+import TestEmail, { TEST_EMAIL_SUBJECT } from './templates/test-email.js';
 import 'reflect-metadata';
 import 'dotenv/config';
 import { NestFactory } from '@nestjs/core';
@@ -22,11 +24,10 @@ async function main(): Promise<void> {
     abortOnError: false,
   });
   try {
-    const result = await app.get(EmailService).send({
+    const result = await app.get(EmailService).sendTemplate({
       to: args[1],
-      subject: 'Rebirth Dungeon email delivery test',
-      text: 'This is a test of Rebirth Dungeon transactional email sending.',
-      html: '<p>This is a test of Rebirth Dungeon transactional email sending.</p>',
+      subject: TEST_EMAIL_SUBJECT,
+      template: createElement(TestEmail),
     });
     console.log(
       JSON.stringify({
