@@ -124,11 +124,15 @@ export class ExampleService {
 }
 ```
 
-TTLs are milliseconds and default to 60,000; `0` means no expiration. Keyv checks the serialized expiration on reads, so shorter TTLs still expire logically even though KV's physical TTL is rounded up to its 60-second minimum. `del()` removes one key; `clear()` paginates through the `nest-cache:` prefix and leaves unrelated KV keys intact. Clearing is not atomic with concurrent writes. HTTP responses are cached only if you explicitly apply Nest's `CacheInterceptor`.
+TTLs are milliseconds and default to 60,000; `0` means no expiration. The official adapter stores precise expiration metadata and checks it on reads. Short-lived entries are deleted when read after expiry; native KV expiration is also used when the remaining TTL exceeds 60 seconds. Unread short-lived entries may remain physically stored, so use longer TTLs where automatic reclamation matters. `del()` removes one key; `clear()` paginates through the `nest-cache:v6:` prefix and leaves unrelated KV keys intact. Clearing is not atomic with concurrent writes. HTTP responses are cached only if you explicitly apply Nest's `CacheInterceptor`.
 
 KV is eventually consistent: updates and deletions can take 60 seconds or longer to appear elsewhere, and each key supports at most one write per second. Use this for reusable, read-heavy data that can tolerate stale reads; keep authoritative game state and coordination outside this cache. See the [Nest caching docs](https://docs.nestjs.com/techniques/caching) and [KV write and expiration rules](https://developers.cloudflare.com/kv/api/write-key-value-pairs/).
 
-The small native adapter stays on Keyv 5. The official [`@keyv/cloudflare-kv`](https://github.com/jaredwray/keyv/tree/main/storage/cloudflare-kv) adapter currently requires prerelease Keyv 6; upgrade only when a compatible stable combination is available and expiration/namespace tests pass.
+[`@keyv/cloudflare-kv`](https://github.com/jaredwray/keyv/tree/main/storage/cloudflare-kv) and `keyv` are pinned to `6.0.0-rc.1`. The adapter uses `mode: 'bind'` with `env.CACHE`; no REST credentials or extra binding are needed. These are prerelease dependencies; update them together and rerun cache and Worker tests.
+
+Nest/cache-manager 7 still expects Keyv 5's raw-read API. `keyv-cache-manager` is an npm alias pinned to Keyv 5.6.0 and provides that interface over the Keyv 6 store using the public storage API. Its serialization and key prefixing are disabled, leaving Keyv 6 and the official adapter responsible for persistence. The targeted Nest peer override permits Keyv 6 at the project root; always supply `createWorkerCache()` to `CacheModule`, rather than a bare Keyv 6 instance. Tests exercise Nest injection, `ttl()`, `wrap()`, bulk operations, error propagation, and local KV. Remove the compatibility layer and override once Nest/cache-manager support Keyv 6 directly.
+
+The nested Keyv envelope uses a new `nest-cache:v6:` prefix to avoid reading the previous format. Deployment starts with a cold cache. Existing `nest-cache:` entries are left untouched and expire according to their old TTL; old entries without expiry need separate cleanup if desired.
 
 ## Request validation with Zod
 

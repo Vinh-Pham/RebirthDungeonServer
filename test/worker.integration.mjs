@@ -196,7 +196,8 @@ await test(
         assert.equal(cache.status, 200);
         assert.deepEqual(await cache.json(), {
           value: { count: 7 },
-          deleted: true,
+          wrapped: { count: 7 },
+          expiring: true,
           missing: true,
         });
         const email = await fetch(`${origin}/__test/render-email`);

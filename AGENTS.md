@@ -32,7 +32,7 @@ Read `README.md`, `package.json`, and the relevant implementation before changin
 - Use Prettier with `.prettierrc` and Oxlint with `.oxlintrc.json`. Format only changed project files; avoid unrelated formatting churn.
 - Compile Nest sources with TypeScript before Wrangler bundles `dist/worker/main.js`; decorator metadata must survive. Worker code may use supported Node APIs under `nodejs_compat`; never import native addons or dotenv into the Worker. Keep generated binding types in sync.
 - Keep the current Nest optional-package aliases and synthetic module URL workaround until a tested upstream replacement is available; do not patch dependencies.
-- Keep Keyv 5 and its native KV adapter; the official Cloudflare adapter currently requires prerelease Keyv 6. Preserve namespace isolation and precise logical expiry.
+- Use the pinned Keyv 6 and official `@keyv/cloudflare-kv` binding adapter. Nest/cache-manager 7 requires the Keyv 5 alias compatibility layer in `createWorkerCache()` and the targeted peer override; do not pass bare Keyv 6 to `CacheModule`. Preserve namespace isolation, precise expiry, and cache-manager raw-read semantics.
 - Never hand-edit `node_modules/`, `dist/`, or Wrangler local state. Regenerate generated artifacts through their owning tools.
 
 ## Validation, routes, and OpenAPI
@@ -68,7 +68,7 @@ Preserve these contracts unless the task explicitly changes them:
 - Timestamps use SQLite integer `timestamp_ms` columns, application `Date` values, and ISO strings in API responses. Set `updatedAt` explicitly when modifying records.
 - `npm run db:migrate` targets **remote D1** using environment credentials. It is not the local test migration command. For local work use explicit `wrangler d1 execute DB --local --file <migration.sql>` or the isolated auth test harness.
 - KV is eventually consistent. Use it for cacheable data that tolerates stale reads, never authoritative auth/session state or immediate invalidation.
-- Cache TTLs are milliseconds; `0` means no expiration. Preserve the adapter's logical expiry behavior and `nest-cache:` namespace isolation. Response caching is opt-in.
+- Cache TTLs are milliseconds; `0` means no expiration. Preserve the adapter's logical expiry behavior and `nest-cache:v6:` namespace isolation. Response caching is opt-in.
 
 ## Worker deployment and runtime
 

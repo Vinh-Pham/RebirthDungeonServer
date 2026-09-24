@@ -1,6 +1,8 @@
 // Local integration entrypoint only. Production Wrangler uses dist/worker/main.js.
 import 'reflect-metadata';
-import { Controller, Get } from '@nestjs/common';
+import { Controller, Get, Inject } from '@nestjs/common';
+import { CACHE_MANAGER } from '@nestjs/cache-manager';
+import { Public } from '../dist/auth/public.decorator.js';
 import { AppModule } from '../dist/app.module.js';
 import { workerPasswordHasher } from '../dist/worker/password-hasher.js';
 import { createWorkerHandler } from '../dist/worker/handler.js';
@@ -16,6 +18,35 @@ Get()(
   'get',
   Object.getOwnPropertyDescriptor(ProtectedController.prototype, 'get'),
 );
+class CacheController {
+  constructor(cache) {
+    this.cache = cache;
+  }
+  async get() {
+    await this.cache.set('runtime-test', { count: 7 }, 1000);
+    const value = await this.cache.get('runtime-test');
+    const expires = await this.cache.ttl('runtime-test');
+    const wrapped = await this.cache.wrap('runtime-test', async () => ({
+      count: -1,
+    }));
+    await this.cache.del('runtime-test');
+    const missing = await this.cache.get('runtime-test');
+    return {
+      value,
+      wrapped,
+      expiring: expires > Date.now(),
+      missing: missing === undefined,
+    };
+  }
+}
+Controller('__test/kv')(CacheController);
+Inject(CACHE_MANAGER)(CacheController, undefined, 0);
+Public()(CacheController);
+Get()(
+  CacheController.prototype,
+  'get',
+  Object.getOwnPropertyDescriptor(CacheController.prototype, 'get'),
+);
 let initializationAttempts = 0;
 const startupProbe = {
   onModuleInit() {
@@ -26,10 +57,9 @@ const startupProbe = {
 };
 const api = createWorkerHandler((env) => ({
   ...AppModule.register(env, workerPasswordHasher),
-  controllers: [ProtectedController],
+  controllers: [ProtectedController, CacheController],
   providers: [{ provide: 'TEST_STARTUP_PROBE', useValue: startupProbe }],
 }));
-import { createWorkerCache } from '../dist/worker/kv.store.js';
 import { renderEmailTemplate } from '../dist/email/render-email-template.js';
 import { CloudflareEmailTransport } from '../dist/email/cloudflare-email.transport.js';
 import { EmailService } from '../dist/email/email.service.js';
@@ -58,14 +88,6 @@ export default {
           template: TestEmail({ recipientName: '<Adventurer>' }),
         }),
       );
-    }
-    if (path === '/__test/kv') {
-      const cache = createWorkerCache(env.CACHE);
-      await cache.set('runtime-test', { count: 7 }, 1000);
-      const value = await cache.get('runtime-test');
-      const deleted = await cache.delete('runtime-test');
-      const missing = await cache.get('runtime-test');
-      return Response.json({ value, deleted, missing: missing === undefined });
     }
     return api.fetch(request, env, ctx);
   },

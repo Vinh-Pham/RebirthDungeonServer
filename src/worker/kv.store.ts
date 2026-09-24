@@ -1,48 +1,31 @@
-import { EventEmitter } from 'node:events';
+import KeyvCloudflareKV, {
+  type CloudflareKVNamespace,
+} from '@keyv/cloudflare-kv';
 import Keyv from 'keyv';
+import CacheManagerKeyv from 'keyv-cache-manager';
 
-export class WorkerKvStore extends EventEmitter {
-  readonly opts = {};
-  namespace = 'nest-cache';
-  constructor(private readonly kv: KVNamespace) {
-    super();
-  }
-  private checkKey(key: string) {
-    if (!key.startsWith(`${this.namespace}:`))
-      throw new Error('Invalid cache key');
-  }
-  async get(key: string): Promise<string | undefined> {
-    this.checkKey(key);
-    return (await this.kv.get(key)) ?? undefined;
-  }
-  async set(key: string, value: string, ttl?: number): Promise<boolean> {
-    this.checkKey(key);
-    // Keyv's envelope enforces logical expiry below KV's 60-second minimum.
-    await this.kv.put(key, value, {
-      expirationTtl:
-        ttl && ttl > 0 ? Math.max(60, Math.ceil(ttl / 1000)) : undefined,
-    });
-    return true;
-  }
-  async delete(key: string): Promise<boolean> {
-    this.checkKey(key);
-    const existed = (await this.kv.get(key)) !== null;
-    await this.kv.delete(key);
-    return existed;
-  }
-  async clear(): Promise<void> {
-    let cursor: string | undefined;
-    do {
-      const page = await this.kv.list({ prefix: `${this.namespace}:`, cursor });
-      await Promise.all(page.keys.map(({ name }) => this.kv.delete(name)));
-      cursor = page.list_complete ? undefined : page.cursor;
-    } while (cursor);
-  }
-}
-export function createWorkerCache(kv: KVNamespace): Keyv {
-  return new Keyv({
-    store: new WorkerKvStore(kv),
-    namespace: 'nest-cache',
+export const CACHE_NAMESPACE = 'nest-cache:v6';
+
+export function createWorkerCache(kv: CloudflareKVNamespace): CacheManagerKeyv {
+  const storage = new Keyv({
+    store: new KeyvCloudflareKV({ mode: 'bind', kvNamespace: kv }),
+    namespace: CACHE_NAMESPACE,
+    throwOnErrors: true,
+  });
+
+  // Keyv 5 subscribes to storage errors; keep those errors rejecting operations.
+  storage.on('error', (error: Error) => {
+    throw error;
+  });
+
+  // cache-manager 7 needs Keyv 5's get(key, { raw: true }) contract.
+  // Let Keyv 6 own serialization and the official adapter own KV I/O/expiry.
+  return new CacheManagerKeyv({
+    store: storage,
+    namespace: CACHE_NAMESPACE,
+    useKeyPrefix: false,
+    serialize: undefined,
+    deserialize: undefined,
     throwOnErrors: true,
   });
 }
