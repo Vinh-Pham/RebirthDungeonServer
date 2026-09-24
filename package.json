@@ -43,6 +43,7 @@
     "@nestjs/platform-fastify": "^12.1.0",
     "@nestjs/swagger": "^12.0.2",
     "@nestjs/throttler": "^6.7.0",
+    "@scalar/fastify-api-reference": "^1.71.0",
     "argon2": "^0.45.1",
     "cache-manager": "^7.2.9",
     "dotenv": "^18.0.3",

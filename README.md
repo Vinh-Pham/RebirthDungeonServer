@@ -217,19 +217,21 @@ All authentication request bodies use strict Zod object schemas in `src/auth/aut
 
 For new route inputs, declare a Zod schema and attach `new ZodValidationPipe(schema)` to `@Body()`, `@Query()`, or `@Param()`. Use `z.strictObject()` to reject unknown fields. Validation is explicit on route parameters and does not depend on reflected DTO classes or a global class-validator pipe. Email is normalized before validation; passwords are preserved exactly. See the [Zod object documentation](https://zod.dev/api#zstrictobject).
 
-## Swagger and OpenAPI
+## Scalar and OpenAPI
 
 With Nest running (default port 3000), open:
 
-- Swagger UI: [http://localhost:3000/docs](http://localhost:3000/docs)
+- Scalar API reference: [http://localhost:3000/docs](http://localhost:3000/docs)
 - OpenAPI JSON: [http://localhost:3000/openapi.json](http://localhost:3000/openapi.json)
 - OpenAPI YAML: [http://localhost:3000/openapi.yaml](http://localhost:3000/openapi.yaml)
 
-These documentation URLs are publicly accessible. Swagger's “Try it out” sends real requests to this server. Register, login, and refresh are documented with request constraints, token/user response fields, status codes, rate limits, and session replacement/rotation behavior. Request schemas are generated from Zod; custom password refinements carry explicit JSON Schema metadata.
+These documentation URLs are publicly accessible. Scalar's API client sends real requests to this server. Register, login, and refresh are documented with request constraints, token/user response fields, status codes, rate limits, and session replacement/rotation behavior. Request schemas are generated from Zod; custom password refinements carry explicit JSON Schema metadata.
 
-Use **Authorize** to enter an access token for protected routes. The OpenAPI default is Bearer authentication; existing public auth operations explicitly override it. Authorization is not persisted across browser reloads. For a new public route, add both `@Public()` and `@ApiOperation({ security: [] })`; add operation, body, and response documentation to new routes. Configuration lives in `src/openapi/configure-openapi.ts` and is shared by production and tests through `configureApp()`.
+Use Scalar’s **Authentication** controls to enter an access token for protected routes. The OpenAPI default is Bearer authentication; existing public auth operations explicitly override it. Authorization is not persisted across browser reloads. For a new public route, add both `@Public()` and `@ApiOperation({ security: [] })`; add operation, body, and response documentation to new routes. Configuration lives in `src/openapi/configure-openapi.ts` and is shared by production and tests through `configureApp()`.
 
-Reference: [Nest Swagger setup](https://docs.nestjs.com/openapi/introduction).
+Scalar is registered with `@scalar/fastify-api-reference` and serves its JavaScript at `/docs/js/scalar.js` from the application. Default external fonts and telemetry are disabled, and authorization is not persisted. `@nestjs/swagger` remains responsible for generating the OpenAPI document from route annotations; its Swagger UI is disabled.
+
+References: [Scalar Fastify integration](https://guides.scalar.com/scalar/scalar-api-references/integrations/fastify), [Nest OpenAPI generation](https://docs.nestjs.com/openapi/introduction).
 
 ## Cloudflare Email Sending
 

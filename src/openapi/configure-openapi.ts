@@ -1,3 +1,4 @@
+import scalarApiReference from '@scalar/fastify-api-reference';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import { authOpenApiSchemas } from '../auth/auth.openapi.js';
@@ -30,7 +31,23 @@ export function configureOpenApi(app: NestFastifyApplication): void {
   SwaggerModule.setup('docs', app, document, {
     jsonDocumentUrl: '/openapi.json',
     yamlDocumentUrl: '/openapi.yaml',
-    customSiteTitle: 'Rebirth Dungeon API',
-    swaggerOptions: { persistAuthorization: false, validatorUrl: null },
+    ui: false,
+    raw: ['json', 'yaml'],
   });
+  // Queue the plugin; Nest will finish registering routes before Fastify boots.
+  void app
+    .getHttpAdapter()
+    .getInstance()
+    .register(scalarApiReference, {
+      routePrefix: '/docs',
+      configuration: {
+        title: 'Rebirth Dungeon API',
+        pageTitle: 'Rebirth Dungeon API',
+        url: '/openapi.json',
+        theme: 'default',
+        persistAuth: false,
+        withDefaultFonts: false,
+        telemetry: false,
+      },
+    });
 }

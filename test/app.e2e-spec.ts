@@ -64,14 +64,21 @@ describe('Application routes (e2e)', () => {
     },
   );
 
-  it('serves Swagger UI and its browser assets without authentication', async () => {
-    const response = await app.inject({ method: 'GET', url: '/docs' });
+  it('serves Scalar and its local browser assets without authentication', async () => {
+    const redirect = await app.inject({ method: 'GET', url: '/docs' });
+    expect(redirect.statusCode).toBe(301);
+    expect(redirect.headers.location).toBe('/docs/');
+    const response = await app.inject({ method: 'GET', url: '/docs/' });
     expect(response.statusCode).toBe(200);
     expect(response.headers['content-type']).toContain('text/html');
-    expect(response.body).toContain('swagger-ui');
+    expect(response.body).toContain('src="js/scalar.js"');
+    expect(response.body).toContain('Scalar.createApiReference');
+    expect(response.body).toContain('<title>Rebirth Dungeon API</title>');
+    expect(response.body).toContain('/openapi.json');
+    expect(response.body).not.toContain('swagger-ui');
     const asset = await app.inject({
       method: 'GET',
-      url: '/docs/swagger-ui-bundle.js',
+      url: '/docs/js/scalar.js',
     });
     expect(asset.statusCode).toBe(200);
     expect(asset.headers['content-type']).toMatch(/javascript/);

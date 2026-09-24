@@ -18,7 +18,7 @@ This repository is the **Rebirth Dungeon NestJS server**, written in TypeScript 
 | `src/email/`                         | Internal sending service, Cloudflare REST transport, Zod schemas/configuration, typed errors, and manual test command. |
 | `src/email/templates/`               | React Email `.tsx` templates; `test-email.tsx` is the sample used by the manual send command.                          |
 | `src/email/render-email-template.ts` | Shared server-side rendering of a React element to HTML and plain text.                                                |
-| `src/openapi/`                       | Swagger UI and OpenAPI document setup.                                                                                 |
+| `src/openapi/`                       | Scalar API reference UI and Nest-generated OpenAPI document setup.                                                     |
 | `worker/`                            | Separate Cloudflare Worker: authenticated `/query` and `/cache` endpoints backed by D1 and KV.                         |
 | `drizzle/`                           | Generated SQL migrations and schema snapshots. Keep these with schema changes.                                         |
 | `test/`                              | Fastify route/documentation tests and compiled-app authentication tests using isolated local D1.                       |
@@ -48,7 +48,8 @@ Read `README.md`, `package.json`, and the relevant implementation before changin
 - Preserve the validation error contract: HTTP 400 with `statusCode`, `error`, `message`, and `issues` containing `path`, `code`, and `message`. Do not include submitted values or secrets in errors.
 - Routes are protected by the global auth guard unless explicitly marked `@Public()`. Public operations must also declare `@ApiOperation({ security: [] })` to override the OpenAPI Bearer default.
 - Document new or changed routes with tags, operation IDs, request schemas, success responses, and relevant errors. Generate request documentation from Zod. Custom refinements that JSON Schema cannot express need explicit metadata/descriptions, as shown by the password schema.
-- Swagger UI is served at `/docs`, JSON at `/openapi.json`, and YAML at `/openapi.yaml`. These documentation endpoints are public. The old root example route is absent.
+- Scalar API reference is served at `/docs`, JSON at `/openapi.json`, and YAML at `/openapi.yaml`. These documentation endpoints are public. The old root example route is absent.
+- Keep `@nestjs/swagger` route annotations and document generation; Swagger UI is disabled. Use `@scalar/fastify-api-reference` for the UI, with local assets and `persistAuth: false`.
 - Use `configureApp()` in both application startup and Fastify tests so documentation and hooks stay consistent.
 
 ## Authentication invariants
@@ -112,7 +113,7 @@ Run from the server repository root:
 | `npm run worker:dev`                   | Run the D1/KV Worker locally.                                                                         |
 | `npm run lint`                         | Type-aware linting of `src/` and `test/`.                                                             |
 | `npm test`                             | Vitest unit tests (`*.spec.ts`).                                                                      |
-| `npm run test:e2e`                     | Fastify routes, validation, Swagger UI/assets, and OpenAPI tests.                                     |
+| `npm run test:e2e`                     | Fastify routes, validation, Scalar UI/assets, and OpenAPI tests.                                      |
 | `npm run test:auth`                    | Build and test the compiled app against temporary local Wrangler/D1; cleans up its own test database. |
 | `npm run email:dev`                    | Preview React Email templates locally at `http://localhost:3001`; no sending or credentials required. |
 | `npm run email:test -- --to <address>` | Send the sample template through Cloudflare to an authorized recipient; requires email configuration. |
@@ -126,7 +127,7 @@ Run from the server repository root:
 
 1. Inspect the affected paths, current tests, and repository status; make the smallest coherent change.
 2. Add or update behavior-focused tests for changed logic. Cover validation, error handling, authorization, and concurrency when relevant. Documentation-only changes do not require application tests.
-3. For application code, run build, lint, and affected unit tests. Run `test:e2e` for routes, validation, Swagger, or shared bootstrap changes.
+3. For application code, run build, lint, and affected unit tests. Run `test:e2e` for routes, validation, Scalar/OpenAPI, or shared bootstrap changes.
 4. Run `test:auth` for auth, schema, D1/proxy, or root-module changes that could affect the real integration. It uses compiled Nest code to exercise production decorator metadata.
 5. For Worker changes, run `worker:check` and `worker:dry-run`, plus affected local integration checks. Regenerate types when bindings change.
 6. Keep network services mocked in unit tests. Use dummy valid email configuration and override `EMAIL_TRANSPORT` in app tests; never weaken production startup validation to make tests pass.
