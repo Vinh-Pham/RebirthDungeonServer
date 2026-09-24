@@ -230,3 +230,62 @@ These documentation URLs are publicly accessible. Swagger's “Try it out” sen
 Use **Authorize** to enter an access token for protected routes. The OpenAPI default is Bearer authentication; existing public auth operations explicitly override it. Authorization is not persisted across browser reloads. For a new public route, add both `@Public()` and `@ApiOperation({ security: [] })`; add operation, body, and response documentation to new routes. Configuration lives in `src/openapi/configure-openapi.ts` and is shared by production and tests through `configureApp()`.
 
 Reference: [Nest Swagger setup](https://docs.nestjs.com/openapi/introduction).
+
+## Cloudflare Email Sending
+
+`EmailModule` exports an injectable `EmailService` for internal transactional sends. Import `EmailModule` in each module that needs the service. It calls Cloudflare directly from Node.js; it does not use the D1/KV proxy. Registration, login, refresh, and the public OpenAPI routes do not send email.
+
+### Required configuration
+
+The Nest application now refuses to start without valid email configuration, even if no email is being sent. Set these variables in `.env` locally and in your host's secret/environment configuration in production:
+
+```dotenv
+CLOUDFLARE_ACCOUNT_ID=<32-character Cloudflare account ID>
+CLOUDFLARE_EMAIL_API_TOKEN=<dedicated API token with permission to send email>
+EMAIL_FROM=noreply@rebirthdungeon.com
+EMAIL_FROM_NAME=Rebirth Dungeon
+```
+
+`EMAIL_FROM_NAME` defaults to `Rebirth Dungeon` when absent. The other three values are required. Reuse the account ID already configured for Cloudflare; create a dedicated email API token for that account and keep it separate from `CLOUDFLARE_D1_TOKEN` and `D1_PROXY_TOKEN`. Configuration validation is local and does not test token authorization or DNS during startup.
+
+Email Sending was confirmed enabled for `rebirthdungeon.com`. Before production, check the Cloudflare Email Sending dashboard for sender DNS verification and account eligibility/limits. `npx wrangler email sending list` shows enabled domains; `npx wrangler email sending dns get rebirthdungeon.com` shows the required records to compare against public DNS (SPF, DKIM, bounce MX, and DMARC). Listing required records alone does not prove DNS propagation or delivery. See the [sending API](https://developers.cloudflare.com/email-service/api/send-emails/rest-api/) and [Cloudflare setup guide](https://developers.cloudflare.com/email-service/get-started/send-emails/) for token and domain setup.
+
+### Internal API
+
+```ts
+import { Inject, Injectable } from '@nestjs/common';
+import { EmailService } from './email/email.service.js';
+
+@Injectable()
+export class NotificationService {
+  constructor(@Inject(EmailService) private readonly email: EmailService) {}
+
+  sendNotification(to: string) {
+    return this.email.send({
+      to,
+      subject: 'Rebirth Dungeon notification',
+      text: 'Your notification is ready.',
+      html: '<p>Your notification is ready.</p>',
+      // replyTo: 'support@rebirthdungeon.com',
+    });
+  }
+}
+```
+
+The strict Zod input accepts one recipient, a subject, nonempty text and HTML, and an optional reply address. The configured sender is applied internally. Callers are responsible for escaping user-provided values when constructing HTML.
+
+`send()` returns `{ delivered, queued, permanentBounces, suppressedRecipients, messageId? }`; each outcome field contains recipient addresses. Queued means accepted for later delivery. Bounces and suppression are reported as outcomes even when the provider returns HTTP 200. Callers must handle them rather than equating a resolved promise with delivery.
+
+Errors are `EmailSendError` instances with a stable `code`, optional HTTP `status`, and numeric `providerCodes`. Codes are `CONFIGURATION`, `INVALID_MESSAGE`, `REJECTED`, `AUTHORIZATION`, `RATE_LIMITED`, `PROVIDER_FAILURE`, and `UNCERTAIN_OUTCOME`. Raw provider messages and causes are not propagated. A timeout, broken connection, or unusable successful response can leave delivery uncertain. Sends have a 10-second timeout and no automatic retry; retrying may duplicate an accepted email. Logs contain outcome counts, duration, and safe error codes, never recipient addresses, subjects, bodies, or credentials. Do not log the returned recipient arrays.
+
+### Manual delivery test
+
+After configuring the credentials, send only to an address you control:
+
+```bash
+npm run email:test -- --to you@your-domain.com
+```
+
+This builds the app and starts only the email module, so no D1/KV connection or JWT configuration is needed. It sends a fixed text-and-HTML message and prints outcome counts. Queued or delivered results exit successfully; errors, permanent bounces, and suppression exit unsuccessfully. Confirm arrival in the inbox and inspect SPF/DKIM/DMARC results in the received message; queued status alone is not delivery confirmation.
+
+Automated tests use fake transports or mocked fetch responses and never send real email. Existing app/auth tests supply dummy email configuration and reject unexpected sends. Templates, attachments, multiple recipients, queues, delivery webhooks, email verification, and password resets are not part of this module.

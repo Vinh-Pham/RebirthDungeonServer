@@ -1,3 +1,4 @@
+import { EmailModule } from './email/email.module.js';
 import 'dotenv/config';
 import { AuthModule } from './auth/auth.module.js';
 import { Module } from '@nestjs/common';
@@ -12,6 +13,7 @@ export const { ObserveModule, ObserveInstrument } = createObserveModule();
 @Module({
   imports: [
     AuthModule,
+    EmailModule,
     CacheModule.registerAsync({
       isGlobal: true,
       useFactory: () => ({

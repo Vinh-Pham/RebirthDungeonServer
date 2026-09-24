@@ -1,3 +1,4 @@
+import { EMAIL_TRANSPORT } from '../src/email/email.transport.js';
 import { configureApp } from '../src/configure-app.js';
 import { Test, TestingModule } from '@nestjs/testing';
 import { getDrizzleToken } from '@nestjs/drizzle';
@@ -14,13 +15,23 @@ describe('Application routes (e2e)', () => {
     vi.stubEnv('D1_PROXY_URL', 'http://localhost:8787/query');
     vi.stubEnv('KV_PROXY_URL', 'http://localhost:8787/cache');
     vi.stubEnv('D1_PROXY_TOKEN', 'test-token');
+    vi.stubEnv('CLOUDFLARE_ACCOUNT_ID', 'a'.repeat(32));
+    vi.stubEnv('CLOUDFLARE_EMAIL_API_TOKEN', 'test-email-token');
+    vi.stubEnv('EMAIL_FROM', 'noreply@rebirthdungeon.com');
     vi.stubEnv(
       'JWT_ACCESS_SECRET',
       'test-secret-at-least-thirty-two-bytes-long',
     );
     const moduleFixture: TestingModule = await Test.createTestingModule({
       imports: [AppModule],
-    }).compile();
+    })
+      .overrideProvider(EMAIL_TRANSPORT)
+      .useValue({
+        send: vi.fn(() => {
+          throw new Error('Unexpected email send');
+        }),
+      })
+      .compile();
 
     app = moduleFixture.createNestApplication<NestFastifyApplication>(
       new FastifyAdapter(),

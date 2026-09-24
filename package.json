@@ -28,7 +28,8 @@
     "test:cov": "vitest run --coverage",
     "test:debug": "vitest --inspect-brk --no-file-parallelism",
     "test:e2e": "vitest run --config ./vitest.config.e2e.ts",
-    "test:auth": "npm run build && node --test test/auth.integration.mjs"
+    "test:auth": "npm run build && node --test test/auth.integration.mjs",
+    "email:test": "npm run build && node dist/email/email-test.js"
   },
   "dependencies": {
     "@fastify/static": "^10.1.4",

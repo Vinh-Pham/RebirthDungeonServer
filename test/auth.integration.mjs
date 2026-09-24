@@ -1,3 +1,4 @@
+import { EMAIL_TRANSPORT } from '../dist/email/email.transport.js';
 import 'reflect-metadata';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
@@ -49,6 +50,9 @@ await test(
     process.env.D1_PROXY_TOKEN = token;
     process.env.JWT_ACCESS_SECRET =
       'local-integration-secret-with-more-than-32-bytes';
+    process.env.CLOUDFLARE_ACCOUNT_ID = 'a'.repeat(32);
+    process.env.CLOUDFLARE_EMAIL_API_TOKEN = 'test-email-token';
+    process.env.EMAIL_FROM = 'noreply@rebirthdungeon.com';
     let worker;
     let app;
     let workerOutput = '';
@@ -113,7 +117,14 @@ await test(
     const fixture = await Test.createTestingModule({
       imports: [AppModule],
       controllers: [ProtectedController],
-    }).compile();
+    })
+      .overrideProvider(EMAIL_TRANSPORT)
+      .useValue({
+        send() {
+          throw new Error('Unexpected email send');
+        },
+      })
+      .compile();
     app = fixture.createNestApplication(new FastifyAdapter(), {
       logger: false,
     });
