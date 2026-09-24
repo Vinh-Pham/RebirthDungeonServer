@@ -29,6 +29,7 @@
     "test:auth": "npm run test:worker",
     "email:test": "npm run test:worker",
     "queue:test": "npm run test:worker",
+    "cron:test": "npm run test:worker",
     "email:dev": "email dev --dir src/email/templates --port 3001",
     "test:worker": "npm run build && node --test test/worker.integration.mjs"
   },

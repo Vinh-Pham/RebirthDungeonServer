@@ -8,6 +8,7 @@ import { handleAsNodeRequest } from 'cloudflare:node';
 import { configureApp } from '../configure-app.js';
 import type { DynamicModule } from '@nestjs/common';
 import { QueueConsumerService } from '../queues/queue-consumer.service.js';
+import { SchedulingService } from '../scheduling/scheduling.service.js';
 
 async function bootstrap(module: DynamicModule) {
   const app = await NestFactory.create<NestExpressApplication>(
@@ -39,6 +40,22 @@ export function createWorkerHandler(
     return application;
   };
   return {
+    async scheduled(
+      controller: ScheduledController,
+      env: Env,
+      _ctx: ExecutionContext,
+    ): Promise<void> {
+      try {
+        const app = await getApplication(env);
+        await app.get(SchedulingService).run({
+          cron: controller.cron,
+          scheduledTime: controller.scheduledTime,
+        });
+      } catch {
+        console.error(JSON.stringify({ code: 'WORKER_SCHEDULED_FAILED' }));
+        throw new Error('WORKER_SCHEDULED_FAILED');
+      }
+    },
     async fetch(
       request: Request,
       env: Env,

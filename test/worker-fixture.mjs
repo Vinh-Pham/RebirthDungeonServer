@@ -106,6 +106,9 @@ import { emailConfig } from '../dist/email/email.config.js';
 import TestEmail from '../dist/email/templates/test-email.js';
 
 export default {
+  async scheduled(controller, env, ctx) {
+    return api.scheduled(controller, env, ctx);
+  },
   async queue(batch, env, ctx) {
     if (batch.queue === 'rebirth-dungeon-example-dlq') {
       for (const message of batch.messages) {

@@ -20,7 +20,7 @@ Wrangler supplies local D1, KV, Queues, rate-limit, and email bindings. Email de
 
 ## Runtime and build
 
-`src/worker/main.ts` composes the application. `createWorkerHandler()` lazily initializes Nest on the first HTTP request or queue delivery and uses Cloudflare's supported [Node HTTP bridge](https://developers.cloudflare.com/workers/runtime-apis/nodejs/http/). Failed initialization can be retried. Only the application is cached; request-specific data and database sessions are not.
+`src/worker/main.ts` composes the application. `createWorkerHandler()` lazily initializes Nest on the first HTTP request, queue delivery, or scheduled event and uses Cloudflare's supported [Node HTTP bridge](https://developers.cloudflare.com/workers/runtime-apis/nodejs/http/). Failed initialization can be retried. Only the application is cached; request-specific data and database sessions are not.
 
 `npm run build` compiles TypeScript before Wrangler bundles `dist/worker/main.js`, preserving Nest decorator metadata. The build also copies Scalar's locked browser bundle to `dist/assets/docs/js/scalar.js`; Workers Static Assets serves it separately from server code. Never configure all of `dist/` as public assets.
 
@@ -56,7 +56,7 @@ npm run test:worker
 npm run worker:dry-run
 ```
 
-`worker:check` builds/type-checks the API. `test:auth`, `email:test`, and `queue:test` are aliases for the Worker integration suite. That suite uses compiled Nest code, isolated local D1/KV/Queues/rate-limit bindings, fake secrets, and simulated email delivery. It checks password interoperability, session replacement, JWT rejection, expiry, concurrent refresh, replay, registration races and rollback, docs/assets, startup failures, and redaction. Tests do not deploy, migrate remote data, or send real mail. The `__test/*` routes exist only in the local fixture, never in the production entrypoint.
+`worker:check` builds/type-checks the API. `test:auth`, `email:test`, `queue:test`, and `cron:test` are aliases for the Worker integration suite. That suite uses compiled Nest code, isolated local D1/KV/Queues/rate-limit bindings, fake secrets, and simulated email delivery. It checks password interoperability, session replacement, JWT rejection, expiry, concurrent refresh, replay, registration races and rollback, docs/assets, startup failures, and redaction. Tests do not deploy, migrate remote data, or send real mail. The `__test/*` routes exist only in the local fixture, never in the production entrypoint.
 
 ## Authentication
 
@@ -233,7 +233,7 @@ The input must contain only `value`, an integer from -1,000,000 through 1,000,00
 
 ### Delivery and failure handling
 
-The consumer receives up to 10 messages per batch, with a one-second batch timeout. It validates each envelope, awaits its processor, and acknowledges successes individually. Invalid envelopes and processing failures are retried individually, with a five-second delay and up to three retries (four total attempts), then sent to `rebirth-dungeon-example-dlq`. Startup or dispatcher failures retry the batch. HTTP and queue invocations share lazy Nest startup and recover from failed initialization.
+The consumer receives up to 10 messages per batch, with a one-second batch timeout. It validates each envelope, awaits its processor, and acknowledges successes individually. Invalid envelopes and processing failures are retried individually, with a five-second delay and up to three retries (four total attempts), then sent to `rebirth-dungeon-example-dlq`. Startup or dispatcher failures retry the batch. HTTP, queue, and scheduled invocations share lazy Nest startup and recover from failed initialization.
 
 Delivery is **at least once**; duplicate calculation logs are acceptable. The job ID correlates attempts but does not itself deduplicate work. Before adding jobs that change persistent state or call external systems, implement idempotency at the side-effect boundary. Do not move email sending into retries without addressing duplicate delivery.
 
@@ -262,3 +262,38 @@ Replay is deliberate: fix the cause, validate the retained original envelope, th
 To add a queue: configure its producer/consumer and dead-letter destination in Wrangler, regenerate types with `npm run worker:types`, add its nested binding to the module options, define a versioned Zod envelope and typed producer method, register an injectable processor, and dispatch by queue name and job type in the consumer. Preserve per-message acknowledgements and add behavior tests. No BullMQ, Redis, Nest microservices transport, or Cloudflare REST credentials are required.
 
 References: [Queue APIs](https://developers.cloudflare.com/queues/configuration/javascript-apis/), [acknowledgements and retries](https://developers.cloudflare.com/queues/configuration/batching-retries/), [delivery guarantees](https://developers.cloudflare.com/queues/reference/delivery-guarantees/), [local development](https://developers.cloudflare.com/queues/configuration/local-development/), [retention and pricing](https://developers.cloudflare.com/queues/platform/pricing/).
+
+
+## Cloudflare Cron Triggers
+
+The Worker runs the example schedule `* * * * *` every minute in UTC and logs exactly:
+
+```text
+Hello from cron
+```
+
+Schedules are managed in `wrangler.jsonc` under `triggers.crons` and activated by deployment. `SchedulingModule` exports `SchedulingService`; the Worker `scheduled(controller, env, ctx)` handler resolves it through the same lazy Nest application used by HTTP and queue events. A scheduled event can initialize the app before either of those event types arrives.
+
+`SchedulingService.run({ cron, scheduledTime })` dispatches by the exact configured expression. `scheduledTime` is Cloudflare's scheduled timestamp in milliseconds since the Unix epoch, available to future jobs. The greeting is emitted once per successful invocation. Unsupported expressions fail. The Worker awaits job completion, logs `WORKER_SCHEDULED_FAILED` on initialization or job failure, and throws a sanitized error so Cloudflare records failure. A failed initialization can recover on the next invocation.
+
+### Test locally
+
+Start `npm run start:dev`, then invoke Wrangler's built-in local scheduled-event helper:
+
+```bash
+curl 'http://localhost:8787/cdn-cgi/local/scheduled?cron=*+*+*+*+*&format=json'
+```
+
+The expected response is `{ "outcome": "ok", "noRetry": false }`, with one `Hello from cron` line in the Wrangler output. To supply a deterministic scheduled timestamp, append `&time=1790000000000`. The helper belongs to the local runtime; no application HTTP endpoint is added. Local verification invokes events directly instead of waiting for a minute to pass.
+
+Run `npm run cron:test` for the full local Worker suite. It checks the exact greeting, unsupported-schedule failure, reuse of the initialized app, and a fresh production entrypoint initialized by cron before its first HTTP request. Unit tests cover concurrent HTTP/queue/cron startup, awaited completion, sanitized failures, and startup recovery. All test bindings remain local.
+
+### Add schedules and operate them
+
+Add each new cron expression to `triggers.crons` and a matching branch in `SchedulingService.run()`. Keep jobs in injectable services and await their work. Regenerate types with `npm run worker:types` and test each expression. There is no `@nestjs/schedule` dependency, timer loop, database state, or queue hop for the example.
+
+Manage schedules through Wrangler, not parallel dashboard edits: deploying a configured list replaces the Worker's existing cron triggers. Use an explicit empty `crons` array and deploy to remove them; merely omitting the setting leaves deployed schedules in place. For another environment, explicitly configure the intended schedules before deploying.
+
+After an authorized deployment, inspect Workers Logs for `Hello from cron` and `WORKER_SCHEDULED_FAILED`, and Cron Events for invocation outcomes. Local tests do not prove a deployed schedule is active. The example is harmless repeatable work; it adds no exactly-once guarantee or application retry mechanism. Future state-changing jobs must account for repeat invocations.
+
+References: [Cron Triggers](https://developers.cloudflare.com/workers/configuration/cron-triggers/), [scheduled handler](https://developers.cloudflare.com/workers/runtime-apis/handlers/scheduled/).

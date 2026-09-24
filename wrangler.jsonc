@@ -23,6 +23,7 @@
     "EMAIL_FROM_NAME": "Rebirth Dungeon",
   },
   "compatibility_date": "2026-09-23",
+  "triggers": { "crons": ["* * * * *"] },
   "queues": {
     "producers": [
       { "binding": "EXAMPLE_QUEUE", "queue": "rebirth-dungeon-example" },

@@ -74,7 +74,7 @@ Preserve these contracts unless the task explicitly changes them:
 
 - `wrangler.jsonc` deploys `rebirth-dungeon-server` from `dist/worker/main.js`. Preserve the existing D1/KV resource IDs.
 - `npm run deploy` / `worker:deploy` publish the API; `test:worker` tests the real API in local workerd with temporary D1.
-- Boot Nest lazily in the first HTTP request or queue delivery: Nest initialization uses randomness unavailable in global scope. Cache only the application, with startup failure recovery, never request-specific state.
+- Boot Nest lazily in the first HTTP request, queue delivery, or scheduled event: Nest initialization uses randomness unavailable in global scope. Cache only the application, with startup failure recovery, never request-specific state.
 - The Worker uses Express with `cloudflare:node` HTTP adaptation. Do not patch dependencies or enable unsafe runtime evaluation.
 - Preserve `tools/build-worker-assets.mjs` to copy the exact locked Scalar browser file into `dist/assets/docs/js/scalar.js`. Never hand-edit generated assets.
 - Required Worker secret: `JWT_ACCESS_SECRET`. `EMAIL`, `EXAMPLE_QUEUE`, `QUEUE_RATE_LIMIT`, `AUTH_RATE_LIMIT`, and `REFRESH_RATE_LIMIT` are native bindings. Sender vars are in Wrangler config; `.dev.vars` is local only. Validate configuration without network calls.
@@ -85,13 +85,23 @@ Preserve these contracts unless the task explicitly changes them:
 
 - `src/queues/` owns the dynamic `QueuesModule`, producer/consumer services, Zod message schemas, example processor, authenticated controller, and dedicated per-user rate guard. Inject native bindings inside plain provider objects.
 - `QueueProducerService.enqueueExample({ value })` awaits native JSON publishing before returning `{ status: 'accepted', jobId }`. The UUID is an application correlation ID. Acceptance is not completion; publishing failures are sanitized and must not be automatically retried.
-- The Worker `fetch` and `queue` handlers share one lazy application initialization promise with failure recovery. Never cache request data, message batches, or D1 sessions. Queue-first initialization must work without a prior HTTP request.
+- The Worker `fetch`, `queue`, and `scheduled` handlers share one lazy application initialization promise with failure recovery. Never cache request data, message batches, or D1 sessions. Queue-first initialization must work without a prior HTTP request.
 - Consumers validate external envelopes and dispatch by queue name/type. Await processing before each `ack()`; call `retry()` on failed/invalid messages. Startup/dispatcher failures call `retryAll()`. Never swallow a failure and accidentally acknowledge work.
 - Default example settings: batch size 10, timeout 1 second, 3 retries, retry delay 5 seconds, and `rebirth-dungeon-example-dlq`. The production DLQ has no automatic consumer. Dead-letter inspection/replay is deliberate and preserves the job ID.
 - Queues is at-least-once. Duplicate example logs are harmless; future state-changing processors must implement idempotency at the side-effect boundary. Do not automatically queue existing email delivery without resolving duplicate-send behavior.
 - `POST /queues/example` is authenticated, strictly validates one bounded integer, and uses `QUEUE_RATE_LIMIT` (10/minute/user/location). Preserve no-store headers and sanitized 400/401/429/503 responses. Log only safe diagnostic codes, IDs, attempts, duration, and the numeric example result.
 - `npm run queue:test` aliases the full local Worker suite. Tests may use a zero retry delay, injected processors, and a local-only DLQ observer. Keep forced failures and `__test/*` routes out of production; never enable remote bindings in automated tests.
 - Regenerate Worker types after binding changes. Adding queues requires configured producer/consumer bindings, a versioned schema, typed producer method, DI processor, dispatch, and local runtime tests. No database migration is needed for the log-only example.
+
+## Cloudflare Cron Triggers
+
+- `src/scheduling/` owns `SchedulingModule` and its exported `SchedulingService`. Use Cloudflare scheduling, not Nest timer loops or `@nestjs/schedule`.
+- Wrangler `triggers.crons` declares `* * * * *` (every minute, UTC). `SchedulingService.run({ cron, scheduledTime })` matches the exact expression and logs exactly `Hello from cron` once per invocation. Unsupported expressions fail.
+- The Worker `scheduled()` handler resolves the service through shared lazy Nest startup and awaits completion. Cron-first initialization and concurrent HTTP/queue/cron invocations must work. Keep invocation state out of cached application state.
+- Scheduled failures log only `WORKER_SCHEDULED_FAILED` and throw a sanitized error to preserve Cloudflare's failed invocation status. Do not swallow failures, attach raw causes, or disable platform retries. Startup failure recovery remains shared with the other handlers.
+- `npm run cron:test` aliases the full local Worker suite. Use `/cdn-cgi/local/scheduled?cron=*+*+*+*+*&format=json` in local Wrangler tests; assert the outcome and exact greeting. No application test-trigger route is deployed.
+- Manage cron expressions exclusively through Wrangler. Deployment activates/replaces the configured list; removing deployed schedules requires `crons: []`. Keep deployment separate from routine local verification.
+- The example adds no persistent state or exactly-once guarantee. Future jobs with side effects must tolerate repeated invocations. Add a configuration expression, DI job dispatch, and local tests for each new schedule.
 
 ## React Email templates
 
@@ -132,6 +142,7 @@ Run from the server repository root:
 | `npm test`                             | Vitest unit tests (`*.spec.ts`).                                                                      |
 | `npm run test:e2e`                     | Express routes, validation, Scalar UI/assets, and OpenAPI tests.                                      |
 | `npm run test:auth`                    | Alias for the full Worker integration suite.                                                          |
+| `npm run cron:test`                    | Run the local Worker integration suite, including scheduled events.                                    |
 | `npm run email:dev`                    | Preview React Email templates locally at `http://localhost:3001`; no sending or credentials required. |
 | `npm run email:test`                   | Run the Worker integration suite, including local simulated email sending.                            |
 | `npm run worker:types`                 | Regenerate Worker types after binding/config changes.                                                 |

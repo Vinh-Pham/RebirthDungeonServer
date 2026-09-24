@@ -1,5 +1,9 @@
 import type { DynamicModule } from '@nestjs/common';
 import { QueueConsumerService } from '../queues/queue-consumer.service.js';
+import {
+  SchedulingService,
+  type ScheduledInvocation,
+} from '../scheduling/scheduling.service.js';
 
 const mocks = vi.hoisted(() => ({
   create: vi.fn(),
@@ -13,8 +17,13 @@ import { createWorkerHandler } from './handler.js';
 
 function fixture() {
   const consume = vi.fn(async (_batch: MessageBatch<unknown>) => {});
+  const run = vi.fn(async (_invocation: ScheduledInvocation) => {});
   const app = {
-    get: vi.fn(() => ({ consume })),
+    get: vi.fn((token: unknown) => {
+      if (token === SchedulingService) return { run };
+      if (token === QueueConsumerService) return { consume };
+      throw new Error('Unexpected provider');
+    }),
     listen: vi.fn(async () => {}),
     close: vi.fn(async () => {}),
   };
@@ -34,16 +43,93 @@ function fixture() {
   return {
     app,
     consume,
+    run,
     handler,
     batch,
     moduleFactory,
     env: {} as Env,
     ctx: {} as ExecutionContext,
+    controller: {
+      cron: '* * * * *',
+      scheduledTime: 1_790_000_000_000,
+      noRetry: vi.fn(),
+    } satisfies ScheduledController,
   };
 }
 beforeEach(() => {
   vi.resetAllMocks();
   vi.spyOn(console, 'error').mockImplementation(() => {});
+});
+
+it('shares scheduled-first startup with concurrent HTTP and queue events and awaits the job', async () => {
+  const f = fixture();
+  let finishStartup!: () => void;
+  let finishJob!: () => void;
+  f.app.listen.mockImplementationOnce(
+    () =>
+      new Promise<void>((resolve) => {
+        finishStartup = resolve;
+      }),
+  );
+  f.run.mockImplementationOnce(
+    () =>
+      new Promise<void>((resolve) => {
+        finishJob = resolve;
+      }),
+  );
+  let scheduledFinished = false;
+  const scheduled = f.handler.scheduled(f.controller, f.env, f.ctx).then(() => {
+    scheduledFinished = true;
+  });
+  const http = f.handler.fetch(new Request('http://test/'), f.env, f.ctx);
+  const queue = f.handler.queue(f.batch, f.env, f.ctx);
+  await vi.waitFor(() => expect(f.app.listen).toHaveBeenCalledOnce());
+  expect(f.run).not.toHaveBeenCalled();
+  expect(f.consume).not.toHaveBeenCalled();
+  finishStartup();
+  await queue;
+  expect((await http).status).toBe(200);
+  expect(f.run).toHaveBeenCalledWith({
+    cron: f.controller.cron,
+    scheduledTime: f.controller.scheduledTime,
+  });
+  expect(scheduledFinished).toBe(false);
+  finishJob();
+  await scheduled;
+  expect(scheduledFinished).toBe(true);
+  expect(mocks.create).toHaveBeenCalledOnce();
+  expect(f.moduleFactory).toHaveBeenCalledOnce();
+  expect(f.controller.noRetry).not.toHaveBeenCalled();
+});
+
+it('reports scheduled startup failure safely and recovers on the next invocation', async () => {
+  const f = fixture();
+  f.app.listen.mockRejectedValueOnce(new Error('private-cron-startup-error'));
+  await expect(f.handler.scheduled(f.controller, f.env, f.ctx)).rejects.toThrow(
+    'WORKER_SCHEDULED_FAILED',
+  );
+  expect(f.app.close).toHaveBeenCalledOnce();
+  expect(f.run).not.toHaveBeenCalled();
+  expect(console.error).toHaveBeenCalledExactlyOnceWith(
+    JSON.stringify({ code: 'WORKER_SCHEDULED_FAILED' }),
+  );
+  await f.handler.scheduled(f.controller, f.env, f.ctx);
+  expect(mocks.create).toHaveBeenCalledTimes(2);
+  expect(f.run).toHaveBeenCalledOnce();
+});
+
+it('propagates a sanitized scheduled job failure without replacing the initialized app', async () => {
+  const f = fixture();
+  f.run.mockRejectedValueOnce(new Error('private-cron-job-error'));
+  await expect(f.handler.scheduled(f.controller, f.env, f.ctx)).rejects.toThrow(
+    'WORKER_SCHEDULED_FAILED',
+  );
+  expect(console.error).toHaveBeenCalledExactlyOnceWith(
+    JSON.stringify({ code: 'WORKER_SCHEDULED_FAILED' }),
+  );
+  await f.handler.scheduled(f.controller, f.env, f.ctx);
+  expect(mocks.create).toHaveBeenCalledOnce();
+  expect(f.run).toHaveBeenCalledTimes(2);
 });
 afterEach(() => vi.restoreAllMocks());
 

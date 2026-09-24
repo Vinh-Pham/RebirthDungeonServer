@@ -10,6 +10,7 @@ import { createServer } from 'node:net';
 import * as argon2 from 'argon2';
 import { JwtService } from '@nestjs/jwt';
 import { randomUUID } from 'node:crypto';
+import { stripVTControlCharacters } from 'node:util';
 
 await test(
   'Nest API runs inside workerd with native D1/KV',
@@ -31,6 +32,7 @@ await test(
         .replace(/,\s*([}\]])/g, '$1'),
     );
     assert.equal(config.main, 'dist/worker/main.js');
+    assert.deepEqual(config.triggers, { crons: ['* * * * *'] });
     config.main = resolve('test/worker-fixture.mjs');
     assert.ok(
       config.queues.producers.every((binding) => binding.remote !== true),
@@ -169,6 +171,28 @@ await test(
       }
       assert.fail(`Missing ${code} for ${jobId}: ${output.slice(-12000)}`);
     }
+    function scheduledUrl(cron = '* * * * *') {
+      const url = new URL('/cdn-cgi/local/scheduled', origin);
+      url.search = new URLSearchParams({
+        cron,
+        time: '1790000000000',
+        format: 'json',
+      }).toString();
+      return url;
+    }
+    function greetingCount() {
+      return stripVTControlCharacters(output)
+        .split('\n')
+        .filter((line) => line.trim() === 'Hello from cron').length;
+    }
+    async function waitForGreetingCount(expected) {
+      const deadline = Date.now() + 5000;
+      while (Date.now() < deadline && greetingCount() < expected) {
+        if (worker.exitCode !== null) break;
+        await setTimeout(50);
+      }
+      assert.equal(greetingCount(), expected, output.slice(-12000));
+    }
     function queueJob(value) {
       return {
         version: 1,
@@ -224,6 +248,45 @@ await test(
         );
         assert.equal((await fetch(`${origin}/openapi.json`)).status, 200);
         assert.ok(!output.includes('private-startup-fixture-error'));
+      },
+    );
+    await t.test(
+      'scheduled events use Nest, log one exact greeting, and report unsupported schedules as failures',
+      async () => {
+        const before = greetingCount();
+        const response = await fetch(scheduledUrl(), {
+          signal: AbortSignal.timeout(5000),
+        });
+        assert.equal(response.status, 200, await response.clone().text());
+        assert.deepEqual(await response.json(), {
+          outcome: 'ok',
+          noRetry: false,
+        });
+        await waitForGreetingCount(before + 1);
+        const unsupported = await fetch(scheduledUrl('*/5 * * * *'), {
+          signal: AbortSignal.timeout(5000),
+        });
+        assert.equal(unsupported.status, 500);
+        assert.deepEqual(await unsupported.json(), {
+          outcome: 'exception',
+          noRetry: false,
+        });
+        await waitForQueueLog('WORKER_SCHEDULED_FAILED');
+        assert.equal(greetingCount(), before + 1);
+        assert.ok(
+          !output.includes('Unsupported cron expression'),
+          'original job errors must not escape the Worker boundary',
+        );
+        const next = await fetch(scheduledUrl(), {
+          signal: AbortSignal.timeout(5000),
+        });
+        assert.equal(next.status, 200);
+        await waitForGreetingCount(before + 2);
+        assert.equal(
+          queueLogs('QUEUE_TEST_INITIALIZATION').length,
+          2,
+          'scheduled events reuse the initialized Nest application',
+        );
       },
     );
     const post = (route, body, ip = '192.0.2.1') =>
@@ -686,7 +749,7 @@ await test(
       },
     );
     await t.test(
-      'production entrypoint exposes no fixture routes',
+      'production entrypoint boots from cron and exposes no fixture routes',
       async () => {
         const exited = once(worker, 'exit');
         worker.kill('SIGTERM');
@@ -722,7 +785,7 @@ await test(
         let response;
         for (let i = 0; i < 40; i++) {
           try {
-            response = await fetch(`${origin}/openapi.json`, {
+            response = await fetch(scheduledUrl(), {
               signal: AbortSignal.timeout(2000),
             });
             if (response.ok) break;
@@ -731,7 +794,14 @@ await test(
           await setTimeout(100);
         }
         assert.equal(response?.status, 200, output.slice(-12000));
-        const document = await response.json();
+        assert.deepEqual(await response.json(), {
+          outcome: 'ok',
+          noRetry: false,
+        });
+        await waitForGreetingCount(1);
+        const documentResponse = await fetch(`${origin}/openapi.json`);
+        assert.equal(documentResponse.status, 200);
+        const document = await documentResponse.json();
         assert.deepEqual(Object.keys(document.paths).sort(), [
           '/auth/login',
           '/auth/refresh',
