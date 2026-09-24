@@ -7,6 +7,7 @@ import {
 import { handleAsNodeRequest } from 'cloudflare:node';
 import { configureApp } from '../configure-app.js';
 import type { DynamicModule } from '@nestjs/common';
+import { QueueConsumerService } from '../queues/queue-consumer.service.js';
 
 async function bootstrap(module: DynamicModule) {
   const app = await NestFactory.create<NestExpressApplication>(
@@ -28,6 +29,15 @@ export function createWorkerHandler(
 ) {
   // Share only the initialized application, never request data or D1 sessions.
   let application: Promise<NestExpressApplication> | undefined;
+  const getApplication = (env: Env): Promise<NestExpressApplication> => {
+    application ??= Promise.resolve()
+      .then(() => bootstrap(moduleFactory(env)))
+      .catch((error: unknown) => {
+        application = undefined;
+        throw error;
+      });
+    return application;
+  };
   return {
     async fetch(
       request: Request,
@@ -35,13 +45,7 @@ export function createWorkerHandler(
       ctx: ExecutionContext,
     ): Promise<Response> {
       try {
-        application ??= bootstrap(moduleFactory(env)).catch(
-          (error: unknown) => {
-            application = undefined;
-            throw error;
-          },
-        );
-        await application;
+        await getApplication(env);
         return await handleAsNodeRequest(3000, request, env, ctx);
       } catch {
         console.error(JSON.stringify({ code: 'WORKER_API_UNAVAILABLE' }));
@@ -52,6 +56,19 @@ export function createWorkerHandler(
             headers: { 'Cache-Control': 'no-store' },
           },
         );
+      }
+    },
+    async queue(
+      batch: MessageBatch<unknown>,
+      env: Env,
+      _ctx: ExecutionContext,
+    ): Promise<void> {
+      try {
+        const app = await getApplication(env);
+        await app.get(QueueConsumerService).consume(batch);
+      } catch {
+        console.error(JSON.stringify({ code: 'WORKER_QUEUE_UNAVAILABLE' }));
+        batch.retryAll();
       }
     },
   } satisfies ExportedHandler<Env>;

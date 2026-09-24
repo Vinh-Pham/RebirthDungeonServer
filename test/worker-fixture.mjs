@@ -5,6 +5,8 @@ import { CACHE_MANAGER } from '@nestjs/cache-manager';
 import { Public } from '../dist/auth/public.decorator.js';
 import { AppModule } from '../dist/app.module.js';
 import { workerPasswordHasher } from '../dist/worker/password-hasher.js';
+import { QueuesModule } from '../dist/queues/queues.module.js';
+import { ExampleProcessorService } from '../dist/queues/example-processor.service.js';
 import { createWorkerHandler } from '../dist/worker/handler.js';
 
 class ProtectedController {
@@ -51,15 +53,52 @@ let initializationAttempts = 0;
 const startupProbe = {
   onModuleInit() {
     initializationAttempts++;
+    console.log(
+      JSON.stringify({
+        code: 'QUEUE_TEST_INITIALIZATION',
+        attempt: initializationAttempts,
+      }),
+    );
     if (initializationAttempts === 1)
       throw new Error('private-startup-fixture-error');
   },
 };
-const api = createWorkerHandler((env) => ({
-  ...AppModule.register(env, workerPasswordHasher),
-  controllers: [ProtectedController, CacheController],
-  providers: [{ provide: 'TEST_STARTUP_PROBE', useValue: startupProbe }],
-}));
+// Failure injection exists only in this local fixture. No production failure knobs.
+let transientAttempts = 0;
+const processor = {
+  async process(payload) {
+    if (
+      payload.value === -999_999 ||
+      (payload.value === -999_998 && ++transientAttempts === 1)
+    ) {
+      throw new Error('private-queue-processing-error');
+    }
+    return new ExampleProcessorService().process(payload);
+  },
+};
+const api = createWorkerHandler((env) => {
+  const root = AppModule.register(env, workerPasswordHasher);
+  root.imports = root.imports.map((module) =>
+    typeof module === 'object' &&
+    module !== null &&
+    'module' in module &&
+    module.module === QueuesModule
+      ? {
+          ...module,
+          providers: module.providers.map((provider) =>
+            provider === ExampleProcessorService
+              ? { provide: ExampleProcessorService, useValue: processor }
+              : provider,
+          ),
+        }
+      : module,
+  );
+  return {
+    ...root,
+    controllers: [ProtectedController, CacheController],
+    providers: [{ provide: 'TEST_STARTUP_PROBE', useValue: startupProbe }],
+  };
+});
 import { renderEmailTemplate } from '../dist/email/render-email-template.js';
 import { CloudflareEmailTransport } from '../dist/email/cloudflare-email.transport.js';
 import { EmailService } from '../dist/email/email.service.js';
@@ -67,8 +106,31 @@ import { emailConfig } from '../dist/email/email.config.js';
 import TestEmail from '../dist/email/templates/test-email.js';
 
 export default {
+  async queue(batch, env, ctx) {
+    if (batch.queue === 'rebirth-dungeon-example-dlq') {
+      for (const message of batch.messages) {
+        console.log(
+          JSON.stringify({
+            code: 'QUEUE_TEST_DEAD_LETTER',
+            jobId: message.body.jobId,
+          }),
+        );
+        message.ack();
+      }
+      return;
+    }
+    return api.queue(batch, env, ctx);
+  },
   async fetch(request, env, ctx) {
     const path = new URL(request.url).pathname;
+    if (path === '/__test/ready')
+      return Response.json({ initializationAttempts });
+    if (path === '/__test/queue') {
+      await env.EXAMPLE_QUEUE.sendBatch(
+        (await request.json()).map((body) => ({ body, contentType: 'json' })),
+      );
+      return Response.json({ status: 'accepted' });
+    }
     if (path === '/__test/render-email') {
       return Response.json(
         await renderEmailTemplate(TestEmail({ recipientName: '<Adventurer>' })),

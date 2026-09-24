@@ -32,6 +32,26 @@ await test(
     );
     assert.equal(config.main, 'dist/worker/main.js');
     config.main = resolve('test/worker-fixture.mjs');
+    assert.ok(
+      config.queues.producers.every((binding) => binding.remote !== true),
+    );
+    assert.deepEqual(config.queues.consumers, [
+      {
+        queue: 'rebirth-dungeon-example',
+        max_batch_size: 10,
+        max_batch_timeout: 1,
+        max_retries: 3,
+        retry_delay: 5,
+        dead_letter_queue: 'rebirth-dungeon-example-dlq',
+      },
+    ]);
+    // Exercise real delivery/retries quickly in isolated local storage.
+    config.queues.consumers[0].retry_delay = 0;
+    config.queues.consumers.push({
+      queue: 'rebirth-dungeon-example-dlq',
+      max_batch_size: 10,
+      max_batch_timeout: 0,
+    });
     delete config.build;
     assert.ok(
       config.send_email.every((binding) => binding.remote !== true),
@@ -125,35 +145,87 @@ await test(
       if (process.env.WORKER_TEST_DEBUG) process.stderr.write(chunk);
     });
     const origin = `http://127.0.0.1:${port}`;
-    let ready = false;
-    let startupFailures = 0;
-    for (let i = 0; i < 20; i++) {
+    function queueLogs(code, jobId) {
+      return output.split('\n').flatMap((line) => {
+        const match = line.match(/\{"code":.*\}/);
+        if (!match) return [];
+        try {
+          const event = JSON.parse(match[0]);
+          return event.code === code && (!jobId || event.jobId === jobId)
+            ? [event]
+            : [];
+        } catch {
+          return [];
+        }
+      });
+    }
+    async function waitForQueueLog(code, jobId) {
+      const deadline = Date.now() + 25_000;
+      while (Date.now() < deadline) {
+        const events = queueLogs(code, jobId);
+        if (events.length) return events.at(-1);
+        if (worker.exitCode !== null) break;
+        await setTimeout(100);
+      }
+      assert.fail(`Missing ${code} for ${jobId}: ${output.slice(-12000)}`);
+    }
+    function queueJob(value) {
+      return {
+        version: 1,
+        type: 'example.square',
+        jobId: randomUUID(),
+        createdAt: new Date().toISOString(),
+        payload: { value },
+      };
+    }
+    async function publishFixture(jobs) {
+      const response = await fetch(`${origin}/__test/queue`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(jobs),
+        signal: AbortSignal.timeout(5000),
+      });
+      assert.equal(response.status, 200);
+    }
+    let ready;
+    for (let i = 0; i < 50; i++) {
       try {
-        const response = await fetch(`${origin}/openapi.json`, {
+        const response = await fetch(`${origin}/__test/ready`, {
           signal: AbortSignal.timeout(2000),
         });
-        if (response.status === 503) {
-          startupFailures++;
-          assert.deepEqual(await response.json(), {
-            statusCode: 503,
-            message: 'API unavailable',
-          });
-        }
         if (response.ok) {
-          ready = true;
+          ready = await response.json();
           break;
         }
       } catch {}
       if (worker.exitCode !== null) break;
-      await setTimeout(250);
+      await setTimeout(100);
     }
-    assert.ok(ready, output.slice(-12000));
-    assert.equal(
-      startupFailures,
-      1,
-      'failed initialization must recover on the next request',
+    assert.deepEqual(
+      ready,
+      { initializationAttempts: 0 },
+      output.slice(-12000),
     );
-    assert.ok(!output.includes('private-startup-fixture-error'));
+    await t.test(
+      'a real queue event boots Nest before HTTP and recovers failed startup',
+      async () => {
+        const initial = queueJob(6);
+        await publishFixture([initial]);
+        await waitForQueueLog('WORKER_QUEUE_UNAVAILABLE');
+        const completed = await waitForQueueLog(
+          'QUEUE_COMPLETED',
+          initial.jobId,
+        );
+        assert.equal(completed.result, 36);
+        assert.equal(completed.attempt, 2);
+        assert.deepEqual(
+          queueLogs('QUEUE_TEST_INITIALIZATION').map((event) => event.attempt),
+          [1, 2],
+        );
+        assert.equal((await fetch(`${origin}/openapi.json`)).status, 200);
+        assert.ok(!output.includes('private-startup-fixture-error'));
+      },
+    );
     const post = (route, body, ip = '192.0.2.1') =>
       fetch(`${origin}/auth/${route}`, {
         method: 'POST',
@@ -161,6 +233,77 @@ await test(
         body: JSON.stringify(body),
         signal: AbortSignal.timeout(10000),
       });
+    await t.test(
+      'native queues isolate successful messages, retry failures, and deliver poison messages to the DLQ',
+      async () => {
+        const successful = queueJob(8);
+        const transient = queueJob(-999_998);
+        const permanent = queueJob(-999_999);
+        const invalid = { ...queueJob(1), version: 2 };
+        await publishFixture([successful, transient, permanent, invalid]);
+        assert.equal(
+          (await waitForQueueLog('QUEUE_COMPLETED', successful.jobId)).result,
+          64,
+        );
+        assert.equal(
+          (await waitForQueueLog('QUEUE_COMPLETED', transient.jobId)).attempt,
+          2,
+        );
+        await waitForQueueLog('QUEUE_TEST_DEAD_LETTER', permanent.jobId);
+        await waitForQueueLog('QUEUE_TEST_DEAD_LETTER', invalid.jobId);
+        assert.equal(queueLogs('QUEUE_COMPLETED', successful.jobId).length, 1);
+        assert.equal(
+          queueLogs('QUEUE_PROCESSING_FAILED', permanent.jobId).length,
+          4,
+        );
+        assert.equal(queueLogs('QUEUE_INVALID_MESSAGE').length, 4);
+        assert.ok(!output.includes('private-queue-processing-error'));
+      },
+    );
+    await t.test(
+      'authenticated example publishes through Nest and the native binding',
+      async () => {
+        const unauthorized = await fetch(`${origin}/queues/example`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ value: 7 }),
+        });
+        assert.equal(unauthorized.status, 401);
+        assert.equal(unauthorized.headers.get('cache-control'), 'no-store');
+        const signedIn = await post(
+          'register',
+          {
+            email: 'queue-runtime@example.com',
+            password: 'queue-runtime-password',
+          },
+          '192.0.2.150',
+        );
+        assert.equal(signedIn.status, 201, await signedIn.clone().text());
+        const { accessToken } = await signedIn.json();
+        const response = await fetch(`${origin}/queues/example`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            authorization: `Bearer ${accessToken}`,
+          },
+          body: JSON.stringify({ value: 7 }),
+        });
+        assert.equal(response.status, 202, await response.clone().text());
+        assert.equal(response.headers.get('cache-control'), 'no-store');
+        const accepted = await response.json();
+        assert.equal(accepted.status, 'accepted');
+        assert.deepEqual(Object.keys(accepted).sort(), ['jobId', 'status']);
+        const result = await waitForQueueLog('QUEUE_COMPLETED', accepted.jobId);
+        assert.equal(result.result, 49);
+        assert.equal(result.attempt, 1);
+        assert.ok(result.messageId);
+        assert.equal(
+          queueLogs('QUEUE_TEST_INITIALIZATION').length,
+          2,
+          'HTTP reuses the queue-initialized app',
+        );
+      },
+    );
     await t.test(
       'auth routes and docs exist; old proxy routes are absent',
       async () => {
@@ -549,6 +692,10 @@ await test(
         worker.kill('SIGTERM');
         await exited;
         config.main = resolve('dist/worker/main.js');
+        config.queues.consumers = config.queues.consumers.filter(
+          (consumer) => consumer.queue === 'rebirth-dungeon-example',
+        );
+        config.queues.consumers[0].retry_delay = 5;
         config.vars.EMAIL_FROM = 'noreply@rebirthdungeon.com';
         await writeFile(configFile, JSON.stringify(config));
         worker = spawn(
@@ -589,6 +736,7 @@ await test(
           '/auth/login',
           '/auth/refresh',
           '/auth/register',
+          '/queues/example',
         ]);
         // Missing routes may be rejected by the global auth guard before Nest's 404 handler.
         // Check with a valid session so authorization cannot conceal an exposed test endpoint.
@@ -599,7 +747,23 @@ await test(
         );
         assert.equal(login.status, 200);
         const { accessToken } = await login.json();
+        const acceptedResponse = await fetch(`${origin}/queues/example`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            authorization: `Bearer ${accessToken}`,
+          },
+          body: JSON.stringify({ value: 9 }),
+        });
+        assert.equal(acceptedResponse.status, 202);
+        const accepted = await acceptedResponse.json();
+        assert.equal(
+          (await waitForQueueLog('QUEUE_COMPLETED', accepted.jobId)).result,
+          81,
+        );
         for (const path of [
+          '/__test/ready',
+          '/__test/queue',
           '/__test/send-email',
           '/__test/render-email',
           '/__test/kv',

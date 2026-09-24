@@ -1,6 +1,6 @@
 # Rebirth Dungeon server
 
-NestJS/Express API running on **Cloudflare Workers**, locally through Wrangler and in production. It uses native D1, KV, rate-limit, and email bindings. Node.js is used for build/test tooling, not as a second application server. The legacy HTTP database/cache proxy has been removed.
+NestJS/Express API running on **Cloudflare Workers**, locally through Wrangler and in production. It uses native D1, KV, Queues, rate-limit, and email bindings. Node.js is used for build/test tooling, not as a second application server. The legacy HTTP database/cache proxy has been removed.
 
 ## Local development
 
@@ -16,11 +16,11 @@ Use Node 24.15+ in the 24.x line (tested with 24.21.0), or another version allow
 
 4. Run `npm run start:dev` (or `npm run worker:dev`). Open [the API reference](http://localhost:8787/docs).
 
-Wrangler supplies local D1, KV, rate-limit, and email bindings. Email delivery is simulated; keep `remote: true` out of local test configuration. No proxy URLs or email API token are needed.
+Wrangler supplies local D1, KV, Queues, rate-limit, and email bindings. Email delivery is simulated; keep `remote: true` out of local test configuration. No proxy URLs or email API token are needed.
 
 ## Runtime and build
 
-`src/worker/main.ts` composes the application. `createWorkerHandler()` lazily initializes Nest on the first request and uses Cloudflare's supported [Node HTTP bridge](https://developers.cloudflare.com/workers/runtime-apis/nodejs/http/). Failed initialization can be retried. Only the application is cached; request-specific data and database sessions are not.
+`src/worker/main.ts` composes the application. `createWorkerHandler()` lazily initializes Nest on the first HTTP request or queue delivery and uses Cloudflare's supported [Node HTTP bridge](https://developers.cloudflare.com/workers/runtime-apis/nodejs/http/). Failed initialization can be retried. Only the application is cached; request-specific data and database sessions are not.
 
 `npm run build` compiles TypeScript before Wrangler bundles `dist/worker/main.js`, preserving Nest decorator metadata. The build also copies Scalar's locked browser bundle to `dist/assets/docs/js/scalar.js`; Workers Static Assets serves it separately from server code. Never configure all of `dist/` as public assets.
 
@@ -36,7 +36,7 @@ This change requires **no schema migration or password reset**. Preserve existin
 
 - Use Workers Paid; verify Email Sending is enabled and the sender domain is verified in the target account.
 - The only runtime secret is `JWT_ACCESS_SECRET`. Configure it with `npx wrangler secret put JWT_ACCESS_SECRET` if not already set. `.dev.vars` is not uploaded.
-- `EMAIL`, `AUTH_RATE_LIMIT`, and `REFRESH_RATE_LIMIT` are configured bindings. The rate-limit namespace IDs `2026092301` and `2026092302` must be reserved for this application's policies in the account; staging should use separate IDs and resources.
+- Create both queues described below before deployment. `EMAIL`, `EXAMPLE_QUEUE`, `QUEUE_RATE_LIMIT`, `AUTH_RATE_LIMIT`, and `REFRESH_RATE_LIMIT` are configured bindings. The rate-limit namespace IDs `2026092301`, `2026092302`, and `2026092401` must be reserved for this application's policies in the account; staging should use separate IDs and resources.
 - D1 migration credentials remain in `.env` for tooling only. `npm run db:migrate` affects **remote D1**; check existing migration history before running it. Do not rerun initial raw SQL against an existing schema.
 - Run the checks below before `npm run worker:deploy` (or `npm run deploy`). Wrangler runs the build automatically.
 - In staging, measure cold-start and authentication CPU/latency under concurrent requests and check for CPU/memory failures before setting production limits. Local workerd success does not establish production CPU limits or inbox delivery.
@@ -56,7 +56,7 @@ npm run test:worker
 npm run worker:dry-run
 ```
 
-`worker:check` builds/type-checks the API. `test:auth` and `email:test` are aliases for the Worker integration suite. That suite uses compiled Nest code, isolated local D1/KV/rate-limit bindings, fake secrets, and simulated email delivery. It checks password interoperability, session replacement, JWT rejection, expiry, concurrent refresh, replay, registration races and rollback, docs/assets, startup failures, and redaction. Tests do not deploy, migrate remote data, or send real mail. The `__test/*` routes exist only in the local fixture, never in the production entrypoint.
+`worker:check` builds/type-checks the API. `test:auth`, `email:test`, and `queue:test` are aliases for the Worker integration suite. That suite uses compiled Nest code, isolated local D1/KV/Queues/rate-limit bindings, fake secrets, and simulated email delivery. It checks password interoperability, session replacement, JWT rejection, expiry, concurrent refresh, replay, registration races and rollback, docs/assets, startup failures, and redaction. Tests do not deploy, migrate remote data, or send real mail. The `__test/*` routes exist only in the local fixture, never in the production entrypoint.
 
 ## Authentication
 
@@ -206,3 +206,59 @@ The preview runs at [http://localhost:3001](http://localhost:3001), separately f
 For a new template, add a default-exported component with typed props under `src/email/templates/` and provide `PreviewProps` for realistic, non-sensitive sample data. Keep helpers outside that folder so they do not appear as templates in the preview. Use the installed `react-email` package for components and rendering. Interpolate dynamic text through JSX so React escapes it; avoid raw HTML injection. Use inline, email-compatible styles and absolute URLs for any links or images. Keep sending/network calls out of components and do not place credentials or real recipient data in preview props.
 
 The Nest TypeScript configuration supports JSX with `react-jsx`, and the compiled templates are included in `dist/email/templates/`. Node.js can render them without a frontend runtime or a separate template-file copy step. Automated tests render the template, check HTML/text content and escaping, and exercise `sendTemplate()` through a fake transport without sending email. See the [React Email rendering documentation](https://react.email/docs/utilities/render).
+
+
+## Cloudflare Queues
+
+The same Worker publishes to and consumes `rebirth-dungeon-example` through its native `EXAMPLE_QUEUE` binding. `QueuesModule.register({ example, rateLimit })` exports `QueueProducerService` and `QueueConsumerService`. Feature modules that need to publish should import the configured module and inject `QueueProducerService` explicitly; call `await producer.enqueueExample({ value: 7 })`. Keep native bindings nested in the configuration object, as Nest probes providers for lifecycle methods.
+
+The producer validates the payload, creates a UUID job ID, and sends JSON with `{ version: 1, type: 'example.square', jobId, createdAt, payload }`. It awaits acceptance, then returns `{ status: 'accepted', jobId }`. The job ID is generated by the application, not returned by Cloudflare. Publishing failures return a sanitized 503 and are not automatically retried: a failed response can follow an accepted message.
+
+### Try the example
+
+Run `npm run start:dev`, register or log in, and use the returned access token in Scalar at `/docs/` or in this request:
+
+```http
+POST /queues/example HTTP/1.1
+Host: localhost:8787
+Authorization: Bearer <accessToken>
+Content-Type: application/json
+
+{ "value": 7 }
+```
+
+The response is HTTP 202 with `{ "status": "accepted", "jobId": "<uuid>" }`. The consumer calculates `49` and emits a `QUEUE_COMPLETED` log with the same job ID, the Cloudflare message ID, attempt, result, and duration. Search the local Wrangler output or deployed Workers Logs by `jobId`; `QUEUE_ACCEPTED` confirms publishing, while `QUEUE_COMPLETED` confirms processing. There is no job-status endpoint or persistent result store.
+
+The input must contain only `value`, an integer from -1,000,000 through 1,000,000. The route requires an active authenticated session. The dedicated `QUEUE_RATE_LIMIT` binding permits approximately 10 submissions per user per minute per Cloudflare location, including invalid authenticated submissions. Limit rejection returns 429 and `Retry-After: 60`; limiter failure returns 503. All queue HTTP responses use `Cache-Control: no-store`. Scalar documents validation and failure responses. The production API has no forced-failure parameter.
+
+### Delivery and failure handling
+
+The consumer receives up to 10 messages per batch, with a one-second batch timeout. It validates each envelope, awaits its processor, and acknowledges successes individually. Invalid envelopes and processing failures are retried individually, with a five-second delay and up to three retries (four total attempts), then sent to `rebirth-dungeon-example-dlq`. Startup or dispatcher failures retry the batch. HTTP and queue invocations share lazy Nest startup and recover from failed initialization.
+
+Delivery is **at least once**; duplicate calculation logs are acceptable. The job ID correlates attempts but does not itself deduplicate work. Before adding jobs that change persistent state or call external systems, implement idempotency at the side-effect boundary. Do not move email sending into retries without addressing duplicate delivery.
+
+`QUEUE_PUBLISH_FAILED`, `QUEUE_INVALID_MESSAGE`, `QUEUE_PROCESSING_FAILED`, and `WORKER_QUEUE_UNAVAILABLE` are sanitized diagnostic codes. Logs omit raw bodies, provider exceptions, credentials, and personal data; only the example's numeric result is logged.
+
+### Provisioning and operations
+
+Local Wrangler development creates simulated queues without remote resource creation. For an authorized deployment, first select the correct Cloudflare account and create these queues if absent:
+
+```bash
+npx wrangler queues create rebirth-dungeon-example
+npx wrangler queues create rebirth-dungeon-example-dlq
+npm run worker:deploy
+```
+
+Wrangler configures the producer and consumer on deployment. Reserve rate-limit namespace `2026092401` for this policy. Keep staging queue names and rate-limit namespaces separate; named Wrangler environments must declare their own queue bindings/consumers. Preserve the existing D1/KV IDs and JWT secret.
+
+Inspect configuration with `npx wrangler queues info rebirth-dungeon-example` and `npx wrangler queues info rebirth-dungeon-example-dlq`. Use the Cloudflare Queues dashboard for backlog, retry/failure metrics, and dead-letter message inspection, and Workers Logs for job IDs and diagnostic codes. The dead-letter queue has no automatic production consumer, and messages expire according to the account's retention policy; monitor it before expiry.
+
+Replay is deliberate: fix the cause, validate the retained original envelope, then republish it to the source queue through a separately authorized maintenance producer, preserving the original job ID. Only acknowledge/remove the dead-letter copy after republishing succeeds. A crash during replay can duplicate a job, so retain the same idempotency key for future state-changing jobs. No automatic replay loop or maintenance HTTP endpoint is deployed.
+
+### Tests and extending queues
+
+`npm run queue:test` runs the full Worker integration suite with local queues and a test-only dead-letter observer. It covers queue-first startup failure/recovery, authenticated publishing, mixed successful/failed batches, transient recovery, invalid envelopes, exhausted retries, and the production entrypoint. Test retry delay is zero for speed; production configuration remains five seconds. Unit tests also cover concurrent HTTP/queue startup and duplicate delivery. Test fixtures and their forced failures are excluded from the production entrypoint; no remote queue access is enabled.
+
+To add a queue: configure its producer/consumer and dead-letter destination in Wrangler, regenerate types with `npm run worker:types`, add its nested binding to the module options, define a versioned Zod envelope and typed producer method, register an injectable processor, and dispatch by queue name and job type in the consumer. Preserve per-message acknowledgements and add behavior tests. No BullMQ, Redis, Nest microservices transport, or Cloudflare REST credentials are required.
+
+References: [Queue APIs](https://developers.cloudflare.com/queues/configuration/javascript-apis/), [acknowledgements and retries](https://developers.cloudflare.com/queues/configuration/batching-retries/), [delivery guarantees](https://developers.cloudflare.com/queues/reference/delivery-guarantees/), [local development](https://developers.cloudflare.com/queues/configuration/local-development/), [retention and pricing](https://developers.cloudflare.com/queues/platform/pricing/).
