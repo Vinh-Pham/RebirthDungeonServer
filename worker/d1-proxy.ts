@@ -1,3 +1,8 @@
+interface ProxyEnv {
+  DB: D1Database;
+  CACHE: KVNamespace;
+  D1_PROXY_TOKEN: string;
+}
 import { drizzle } from 'drizzle-orm/d1';
 import { handleCache } from './kv-cache.js';
 
@@ -34,7 +39,7 @@ async function verifyToken(
 }
 
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
+  async fetch(request: Request, env: ProxyEnv): Promise<Response> {
     const path = new URL(request.url).pathname;
     if (path !== '/query' && path !== '/cache')
       return new Response('Not found', { status: 404 });
@@ -126,4 +131,4 @@ export default {
       );
     }
   },
-} satisfies ExportedHandler<Env>;
+} satisfies ExportedHandler<ProxyEnv>;

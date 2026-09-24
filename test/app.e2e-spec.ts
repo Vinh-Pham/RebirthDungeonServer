@@ -1,15 +1,17 @@
+import request from 'supertest';
+import { readScalarAsset } from '../src/openapi/read-scalar-asset.js';
 import { EMAIL_TRANSPORT } from '../src/email/email.transport.js';
 import { configureApp } from '../src/configure-app.js';
 import { Test, TestingModule } from '@nestjs/testing';
 import { getDrizzleToken } from '@nestjs/drizzle';
 import {
-  FastifyAdapter,
-  NestFastifyApplication,
-} from '@nestjs/platform-fastify';
+  ExpressAdapter,
+  NestExpressApplication,
+} from '@nestjs/platform-express';
 import { AppModule } from './../src/app.module.js';
 
 describe('Application routes (e2e)', () => {
-  let app: NestFastifyApplication;
+  let app: NestExpressApplication;
 
   beforeEach(async () => {
     vi.stubEnv('D1_PROXY_URL', 'http://localhost:8787/query');
@@ -33,30 +35,27 @@ describe('Application routes (e2e)', () => {
       })
       .compile();
 
-    app = moduleFixture.createNestApplication<NestFastifyApplication>(
-      new FastifyAdapter(),
+    app = moduleFixture.createNestApplication<NestExpressApplication>(
+      new ExpressAdapter(),
     );
-    configureApp(app);
+    configureApp(app, await readScalarAsset());
     await app.init();
-    await app.getHttpAdapter().getInstance().ready();
   });
 
   it('registers D1 and leaves the removed root route unavailable', async () => {
     expect(app.get(getDrizzleToken())).toHaveProperty('select');
-    const response = await app.inject({ method: 'GET', url: '/' });
+    const response = await request(app.getHttpServer()).get('/');
     expect(response.statusCode).toBe(404);
   });
 
   it.each(['register', 'login', 'refresh'])(
     'validates /auth/%s with Zod',
     async (route) => {
-      const response = await app.inject({
-        method: 'POST',
-        url: `/auth/${route}`,
-        payload: {},
-      });
+      const response = await request(app.getHttpServer())
+        .post(`/auth/${route}`)
+        .send({});
       expect(response.statusCode).toBe(400);
-      expect(response.json()).toMatchObject({
+      expect(response.body).toMatchObject({
         message: 'Validation failed',
         issues: expect.any(Array),
       });
@@ -65,29 +64,26 @@ describe('Application routes (e2e)', () => {
   );
 
   it('serves Scalar and its local browser assets without authentication', async () => {
-    const redirect = await app.inject({ method: 'GET', url: '/docs' });
+    const redirect = await request(app.getHttpServer()).get('/docs');
     expect(redirect.statusCode).toBe(301);
     expect(redirect.headers.location).toBe('/docs/');
-    const response = await app.inject({ method: 'GET', url: '/docs/' });
+    const response = await request(app.getHttpServer()).get('/docs/');
     expect(response.statusCode).toBe(200);
     expect(response.headers['content-type']).toContain('text/html');
-    expect(response.body).toContain('src="js/scalar.js"');
-    expect(response.body).toContain('Scalar.createApiReference');
-    expect(response.body).toContain('<title>Rebirth Dungeon API</title>');
-    expect(response.body).toContain('/openapi.json');
-    expect(response.body).not.toContain('swagger-ui');
-    const asset = await app.inject({
-      method: 'GET',
-      url: '/docs/js/scalar.js',
-    });
+    expect(response.text).toContain('src="/docs/js/scalar.js"');
+    expect(response.text).toContain('Scalar.createApiReference');
+    expect(response.text).toContain('<title>Rebirth Dungeon API</title>');
+    expect(response.text).toContain('/openapi.json');
+    expect(response.text).not.toContain('swagger-ui');
+    const asset = await request(app.getHttpServer()).get('/docs/js/scalar.js');
     expect(asset.statusCode).toBe(200);
     expect(asset.headers['content-type']).toMatch(/javascript/);
   });
 
   it('exports all auth operations with Zod input constraints and public security overrides', async () => {
-    const response = await app.inject({ method: 'GET', url: '/openapi.json' });
+    const response = await request(app.getHttpServer()).get('/openapi.json');
     expect(response.statusCode).toBe(200);
-    const document = response.json();
+    const document = response.body;
     expect(document.openapi).toMatch(/^3\./);
     expect(Object.keys(document.paths).sort()).toEqual([
       '/auth/login',
@@ -134,9 +130,9 @@ describe('Application routes (e2e)', () => {
       'passwordHash',
     );
     expect(schemas.AuthResponse.properties.expiresIn.maximum).toBe(900);
-    const yaml = await app.inject({ method: 'GET', url: '/openapi.yaml' });
+    const yaml = await request(app.getHttpServer()).get('/openapi.yaml');
     expect(yaml.statusCode).toBe(200);
-    expect(yaml.body).toContain('/auth/register:');
+    expect(yaml.text).toContain('/auth/register:');
   });
 
   afterEach(async () => {

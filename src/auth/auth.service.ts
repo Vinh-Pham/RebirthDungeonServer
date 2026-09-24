@@ -6,17 +6,11 @@ import {
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { randomBytes, randomUUID, createHash } from 'node:crypto';
-import * as argon2 from 'argon2';
+import { PASSWORD_HASHER, type PasswordHasher } from './password-hasher.js';
 import { AUTH_CONFIG, type AuthConfig } from './auth.config.js';
 import { AuthRepository, type User, type Session } from './auth.repository.js';
 import type { CredentialsDto } from './auth.dto.js';
 
-const PASSWORD_OPTIONS = {
-  type: argon2.argon2id,
-  memoryCost: 19456,
-  timeCost: 2,
-  parallelism: 1,
-} as const;
 export const hashRefresh = (token: string) =>
   createHash('sha256').update(token).digest('hex');
 
@@ -27,10 +21,11 @@ export class AuthService implements OnModuleInit {
     @Inject(AuthRepository) private readonly repository: AuthRepository,
     @Inject(JwtService) private readonly jwt: JwtService,
     @Inject(AUTH_CONFIG) private readonly config: AuthConfig,
+    @Inject(PASSWORD_HASHER) private readonly passwords: PasswordHasher,
   ) {}
 
   async onModuleInit() {
-    this.dummyHash = await argon2.hash(randomBytes(32), PASSWORD_OPTIONS);
+    this.dummyHash = await this.passwords.hash(randomBytes(32).toString('hex'));
   }
 
   private newSession(userId: string) {
@@ -83,7 +78,7 @@ export class AuthService implements OnModuleInit {
     const user: User = {
       id: randomUUID(),
       email: dto.email,
-      passwordHash: await argon2.hash(dto.password, PASSWORD_OPTIONS),
+      passwordHash: await this.passwords.hash(dto.password),
       createdAt: now,
       updatedAt: now,
     };
@@ -95,7 +90,7 @@ export class AuthService implements OnModuleInit {
 
   async login(dto: CredentialsDto) {
     const user = await this.repository.findUser(dto.email);
-    const valid = await argon2.verify(
+    const valid = await this.passwords.verify(
       user?.passwordHash ?? this.dummyHash,
       dto.password,
     );

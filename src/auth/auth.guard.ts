@@ -7,7 +7,6 @@ import {
 } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import { JwtService } from '@nestjs/jwt';
-import type { FastifyRequest } from 'fastify';
 import { AUTH_CONFIG, type AuthConfig } from './auth.config.js';
 import { AuthRepository } from './auth.repository.js';
 import { PUBLIC_ROUTE } from './public.decorator.js';
@@ -32,9 +31,10 @@ export class AuthGuard implements CanActivate {
       ])
     )
       return true;
-    const request = context
-      .switchToHttp()
-      .getRequest<FastifyRequest & { user?: AuthenticatedUser }>();
+    const request = context.switchToHttp().getRequest<{
+      headers: { authorization?: string };
+      user?: AuthenticatedUser;
+    }>();
     const match = /^Bearer ([^ ]+)$/i.exec(request.headers.authorization ?? '');
     if (!match) throw new UnauthorizedException();
     let payload: { sub: string; sid: string; exp: number; iat: number };

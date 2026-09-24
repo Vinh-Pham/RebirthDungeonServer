@@ -1,14 +1,16 @@
+import type { NestExpressApplication } from '@nestjs/platform-express';
+import type { Express } from 'express';
 import { configureOpenApi } from './openapi/configure-openapi.js';
-import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 
-export function configureApp(app: NestFastifyApplication): void {
-  configureOpenApi(app);
-  app
-    .getHttpAdapter()
-    .getInstance()
-    .addHook('onRequest', (request, reply, done) => {
-      if (request.url.split('?')[0].startsWith('/auth/'))
-        reply.header('Cache-Control', 'no-store');
-      done();
-    });
+export function configureApp(
+  app: NestExpressApplication,
+  scalarScript: string,
+): void {
+  const server: Express = app.getHttpAdapter().getInstance();
+  server.disable('x-powered-by');
+  server.use('/auth', (_request, response, next) => {
+    response.setHeader('Cache-Control', 'no-store');
+    next();
+  });
+  configureOpenApi(app, scalarScript);
 }

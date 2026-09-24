@@ -6,6 +6,7 @@ import {
 import { InjectDrizzle } from '@nestjs/drizzle';
 import { and, eq, gt } from 'drizzle-orm';
 import type { D1Database } from '../db/d1-proxy.js';
+import type { DrizzleD1Database } from 'drizzle-orm/d1';
 import { D1ProxyError } from '../db/d1-proxy.js';
 import { authSessions, users } from '../db/schema.js';
 
@@ -14,7 +15,9 @@ export type Session = typeof authSessions.$inferSelect;
 
 @Injectable()
 export class AuthRepository {
-  constructor(@InjectDrizzle() private readonly db: D1Database) {}
+  constructor(
+    @InjectDrizzle() private readonly db: D1Database | DrizzleD1Database,
+  ) {}
 
   private async query<T>(operation: () => Promise<T>): Promise<T> {
     try {
@@ -22,7 +25,10 @@ export class AuthRepository {
     } catch (error) {
       let cause: unknown = error;
       for (let i = 0; i < 8 && cause instanceof Error; i++) {
-        if (cause instanceof D1ProxyError && cause.code === 'EMAIL_EXISTS') {
+        if (
+          (cause instanceof D1ProxyError && cause.code === 'EMAIL_EXISTS') ||
+          /UNIQUE constraint failed: users\.email(?:\b|$)/.test(cause.message)
+        ) {
           throw new ConflictException('Email already registered');
         }
         cause = cause.cause;

@@ -1,3 +1,5 @@
+import request from 'supertest';
+import { readScalarAsset } from '../dist/openapi/read-scalar-asset.js';
 import { EMAIL_TRANSPORT } from '../dist/email/email.transport.js';
 import 'reflect-metadata';
 import assert from 'node:assert/strict';
@@ -12,7 +14,7 @@ import { createServer } from 'node:net';
 import { randomUUID } from 'node:crypto';
 import { Test } from '@nestjs/testing';
 import { Controller, Get } from '@nestjs/common';
-import { FastifyAdapter } from '@nestjs/platform-fastify';
+import { ExpressAdapter } from '@nestjs/platform-express';
 import { JwtService } from '@nestjs/jwt';
 import { AppModule } from '../dist/app.module.js';
 import { configureApp } from '../dist/configure-app.js';
@@ -33,7 +35,7 @@ Get()(
 
 // Use compiled Nest code so DTO decorator metadata matches production.
 await test(
-  'Fastify authentication with an isolated local D1 database',
+  'Express authentication with an isolated local D1 database',
   { timeout: 120000 },
   async (t) => {
     const persistence = await mkdtemp(join(tmpdir(), 'rebirth-auth-'));
@@ -70,6 +72,8 @@ await test(
       execFileSync(
         wrangler,
         [
+          '--config',
+          'wrangler.proxy.jsonc',
           'd1',
           'execute',
           'DB',
@@ -86,6 +90,8 @@ await test(
       wrangler,
       [
         'dev',
+        '--config',
+        'wrangler.proxy.jsonc',
         '--local',
         '--port',
         String(port),
@@ -125,27 +131,29 @@ await test(
         },
       })
       .compile();
-    app = fixture.createNestApplication(new FastifyAdapter(), {
+    app = fixture.createNestApplication(new ExpressAdapter(), {
       logger: false,
     });
-    configureApp(app);
+    // Test-only client identities; production Express never trusts this header.
+    app.use((req, _res, next) => {
+      Object.defineProperty(req, 'ip', {
+        value: req.headers['x-test-client-ip'] ?? '127.0.0.1',
+      });
+      next();
+    });
+    configureApp(app, await readScalarAsset());
     await app.init();
-    await app.getHttpAdapter().getInstance().ready();
     const repository = app.get(AuthRepository);
     let client = 1;
     const post = (path, payload, remoteAddress = `127.0.0.${client++}`) =>
-      app.inject({
-        method: 'POST',
-        url: `/auth/${path}`,
-        payload,
-        remoteAddress,
-      });
+      request(app.getHttpServer())
+        .post(`/auth/${path}`)
+        .set('x-test-client-ip', remoteAddress)
+        .send(payload);
     const access = (token) =>
-      app.inject({
-        method: 'GET',
-        url: '/protected-test',
-        headers: { authorization: `Bearer ${token}` },
-      });
+      request(app.getHttpServer())
+        .get('/protected-test')
+        .set('authorization', `Bearer ${token}`);
     const sql = async (sql, params = []) => {
       const result = await fetch(`${origin}/query`, {
         method: 'POST',
@@ -182,7 +190,7 @@ await test(
         const response = await post('register', credentials);
         assert.equal(response.statusCode, 201, response.body);
         assert.equal(response.headers['cache-control'], 'no-store');
-        registered = response.json();
+        registered = response.body;
         assert.equal(registered.user.email, 'player@example.com');
         assert.equal(registered.expiresIn, 900);
         assert.equal(registered.refreshToken.length, 43);
@@ -216,7 +224,10 @@ await test(
             post('register', { ...credentials, email: 'race@example.com' }),
           ),
         );
-        assert.deepEqual(responses.map((r) => r.statusCode).sort(), [201, 409]);
+        assert.deepEqual(
+          responses.map((r) => r.statusCode).sort((a, b) => a - b),
+          [201, 409],
+        );
         assert.equal(
           (
             await sql(
@@ -270,10 +281,10 @@ await test(
           email: 'unknown@example.com',
         });
         assert.equal(wrong.statusCode, 401);
-        assert.deepEqual(wrong.json(), unknown.json());
+        assert.deepEqual(wrong.body, unknown.body);
         const response = await post('login', credentials);
         assert.equal(response.statusCode, 200, response.body);
-        loggedIn = response.json();
+        loggedIn = response.body;
         assert.equal((await access(registered.accessToken)).statusCode, 401);
         assert.equal(
           (await post('refresh', { refreshToken: registered.refreshToken }))
@@ -291,8 +302,11 @@ await test(
             post('refresh', { refreshToken: loggedIn.refreshToken }),
           ),
         );
-        assert.deepEqual(responses.map((r) => r.statusCode).sort(), [200, 401]);
-        rotated = responses.find((r) => r.statusCode === 200).json();
+        assert.deepEqual(
+          responses.map((r) => r.statusCode).sort((a, b) => a - b),
+          [200, 401],
+        );
+        rotated = responses.find((r) => r.statusCode === 200).body;
         assert.equal(
           rotated.refreshTokenExpiresAt,
           loggedIn.refreshTokenExpiresAt,
@@ -310,7 +324,7 @@ await test(
       'guard rejects missing, forged, expired and incorrectly scoped access tokens',
       async () => {
         assert.equal(
-          (await app.inject({ method: 'GET', url: '/protected-test' }))
+          (await request(app.getHttpServer()).get('/protected-test'))
             .statusCode,
           401,
         );
@@ -349,7 +363,7 @@ await test(
           refreshToken: rotated.refreshToken,
         });
         assert.equal(response.statusCode, 200);
-        rotated = response.json();
+        rotated = response.body;
         assert.ok(rotated.expiresIn <= 60);
         assert.equal(
           rotated.refreshTokenExpiresAt,
@@ -389,10 +403,7 @@ await test(
       await exited;
       const response = await post('login', credentials);
       assert.equal(response.statusCode, 503, response.body);
-      assert.equal(
-        response.json().message,
-        'Authentication storage unavailable',
-      );
+      assert.equal(response.body.message, 'Authentication storage unavailable');
       assert.equal((await access(loggedIn.accessToken)).statusCode, 503);
     });
   },

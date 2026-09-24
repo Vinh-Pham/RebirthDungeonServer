@@ -1,3 +1,4 @@
+import { nodePasswordHasher } from './auth/node-password-hasher.js';
 import { EmailModule } from './email/email.module.js';
 import 'dotenv/config';
 import { AuthModule } from './auth/auth.module.js';
@@ -12,7 +13,7 @@ export const { ObserveModule, ObserveInstrument } = createObserveModule();
 
 @Module({
   imports: [
-    AuthModule,
+    AuthModule.register(nodePasswordHasher),
     EmailModule,
     CacheModule.registerAsync({
       isGlobal: true,

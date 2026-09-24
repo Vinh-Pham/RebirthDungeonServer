@@ -1,51 +1,91 @@
-<p align="center">
-  <a href="http://nestjs.com/" target="blank"><img src="https://nestjs.com/img/logo-small.svg" width="120" alt="Nest Logo" /></a>
-</p>
+# Rebirth Dungeon server
 
-[circleci-image]: https://img.shields.io/circleci/build/github/nestjs/nest/master?token=abc123def456
-[circleci-url]: https://circleci.com/gh/nestjs/nest
+NestJS API deployed to Cloudflare Workers using the Express adapter, native D1 through `drizzle-orm/d1`, and native KV. Authentication, Zod validation, React Email templates, and Scalar/OpenAPI are shared with an optional Node/Express runtime.
 
-  <p align="center">A progressive <a href="http://nodejs.org" target="_blank">Node.js</a> framework for building efficient and scalable server-side applications.</p>
-    <p align="center">
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/v/@nestjs/core.svg" alt="NPM Version" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/l/@nestjs/core.svg" alt="Package License" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/dm/@nestjs/common.svg" alt="NPM Downloads" /></a>
-<a href="https://circleci.com/gh/nestjs/nest" target="_blank"><img src="https://img.shields.io/circleci/build/github/nestjs/nest/master" alt="CircleCI" /></a>
-<a href="https://discord.gg/G7Qnnhy" target="_blank"><img src="https://img.shields.io/badge/discord-online-brightgreen.svg" alt="Discord"/></a>
-<a href="https://opencollective.com/nest#backer" target="_blank"><img src="https://opencollective.com/nest/backers/badge.svg" alt="Backers on Open Collective" /></a>
-<a href="https://opencollective.com/nest#sponsor" target="_blank"><img src="https://opencollective.com/nest/sponsors/badge.svg" alt="Sponsors on Open Collective" /></a>
-  <a href="https://paypal.me/kamilmysliwiec" target="_blank"><img src="https://img.shields.io/badge/Donate-PayPal-ff3f59.svg" alt="Donate us"/></a>
-    <a href="https://opencollective.com/nest#sponsor"  target="_blank"><img src="https://img.shields.io/badge/Support%20us-Open%20Collective-41B883.svg" alt="Support us"></a>
-  <a href="https://twitter.com/nestframework" target="_blank"><img src="https://img.shields.io/twitter/follow/nestframework.svg?style=social&label=Follow" alt="Follow us on Twitter"></a>
-</p>
-  <!--[![Backers on Open Collective](https://opencollective.com/nest/backers/badge.svg)](https://opencollective.com/nest#backer)
-  [![Sponsors on Open Collective](https://opencollective.com/nest/sponsors/badge.svg)](https://opencollective.com/nest#sponsor)-->
+## Run the full API on Workers
 
-## Description
+The previous `worker/d1-proxy.ts` deployment only served `/query` and `/cache`, so `/auth/*` returned 404. The default `wrangler.jsonc` now targets **rebirth-dungeon-server** and boots Nest through `src/worker/main.ts`. Local Node and Workers both use the Express adapter and shared HTTP setup. The Worker uses Cloudflare’s [Node HTTP bridge](https://developers.cloudflare.com/workers/runtime-apis/nodejs/http/) with Express.
 
-[Nest](https://github.com/nestjs/nest) framework TypeScript starter repository.
+1. Run `npm ci`.
+2. Copy `.dev.vars.example` to `.dev.vars` and fill `JWT_ACCESS_SECRET` (at least 32 bytes), `CLOUDFLARE_ACCOUNT_ID`, and the dedicated `CLOUDFLARE_EMAIL_API_TOKEN`. Generate a JWT secret with `openssl rand -base64 48`. Never commit these values. Sender defaults live in `wrangler.jsonc`.
+3. Apply the existing migrations to **local** D1:
 
-## Cloudflare D1 database
+   ```bash
+   npx wrangler d1 execute DB --local --file drizzle/20260923195301_chunky_sumo/migration.sql
+   ```
 
-The Fastify server runs on Node.js, so it cannot receive a native D1 binding. A small Cloudflare Worker in `worker/d1-proxy.ts` owns that binding through the `drizzle-orm/d1` adapter. Nest registers its HTTP client with `@nestjs/drizzle` in `src/app.module.ts`. This follows [Cloudflare's guidance for accessing D1 outside Workers](https://developers.cloudflare.com/d1/tutorials/build-an-api-to-access-d1/).
+   Apply subsequent committed migrations in timestamp order when present.
 
-1. Create a D1 database with `npx wrangler d1 create rebirth-dungeon`. Put its database ID in `wrangler.jsonc` in place of `REPLACE_WITH_D1_DATABASE_ID`.
-2. Generate a random shared token. Copy `.dev.vars.example` to `.dev.vars` and put the token in `D1_PROXY_TOKEN`. Copy `.env.example` to `.env` and put the same token in its `D1_PROXY_TOKEN`. For local development, leave `D1_PROXY_URL` as `http://127.0.0.1:8787/query`.
-3. Start the local Worker with `npm run worker:dev`, then start Nest with `npm run start:dev`. The Worker uses a local D1 database in this mode. The Worker endpoint accepts only authenticated, parameterized SQL requests.
-4. Define tables in `src/db/schema.ts` with `sqliteTable()`. Create migration files with `npm run db:generate`. For remote migrations, fill `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_DATABASE_ID`, and `CLOUDFLARE_D1_TOKEN` in `.env` with a token that has D1 edit permission, then run `npm run db:migrate`. Commit the generated `drizzle/` files with the schema.
-5. To use the deployed database at runtime, deploy the Worker with `npm run worker:deploy`, set its `D1_PROXY_TOKEN` with `npx wrangler secret put D1_PROXY_TOKEN`, and set Nest's `D1_PROXY_URL` to the deployed Worker's `/query` URL. Supply the same token to Nest as `D1_PROXY_TOKEN`.
+4. Run `npm run worker:dev`. Open `http://localhost:8787/docs`. No separate Nest process is needed.
 
-Inject the database in Nest services with `@InjectDrizzle()` from `@nestjs/drizzle` and the `D1Database` type from `src/db/d1-proxy.ts`. `db.batch()` sends a group of statements to D1's native batch API. Interactive `db.transaction()` calls are unavailable across HTTP requests; use `db.batch()` for a fixed group of statements. `npm run db:studio` connects to the remote database using the Drizzle Kit credentials in `.env`.
+`npm run build` compiles with TypeScript to preserve Nest decorator metadata, then builds the local Scalar browser asset. Wrangler bundles the compiled Worker entrypoint plus Argon2 Wasm modules. Optional unused Nest integrations are mapped to explicit error modules; enable/install them deliberately before use. `import.meta.url` has a synthetic file URL solely for Nest’s unused optional-package loaders, not filesystem access.
+
+## Deploy
+
+The existing D1 database and KV namespace IDs are retained. This deployment uses the native `DB` and `CACHE` bindings and **does not require `D1_PROXY_TOKEN` or proxy URLs**.
+
+Set the required secrets on `rebirth-dungeon-server`:
+
+```bash
+npx wrangler secret put JWT_ACCESS_SECRET
+npx wrangler secret put CLOUDFLARE_ACCOUNT_ID
+npx wrangler secret put CLOUDFLARE_EMAIL_API_TOKEN
+```
+
+Use the existing JWT secret if active sessions must remain valid. Secret commands affect the deployed Worker; `.dev.vars` and `.env` are not uploaded automatically. Missing required secrets block deployment. Email and JWT configuration are validated when Nest bootstraps on the first request, without contacting the email API.
+
+Before deploying, ensure the remote D1 schema has all committed migrations. `npm run db:migrate` uses `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_DATABASE_ID`, and a separate `CLOUDFLARE_D1_TOKEN` from `.env` and changes **remote D1**. Do not rerun raw migration SQL against an existing schema. This runtime migration adds no database migration.
+
+```bash
+npm run worker:dry-run
+npm run worker:deploy
+```
+
+`npm run deploy` also deploys the full API Worker. In Cloudflare Builds, use `npm run worker:deploy` as the deploy command. Wrangler invokes the build itself. The expected URL is `https://rebirth-dungeon-server.zenp.workers.dev`.
+
+Use **POST** for `/auth/register`, `/auth/login`, and `/auth/refresh`. Opening `/auth/register` in a browser sends GET and still returns 404. Open `/docs` for an interactive client. A harmless routing check (no account created) is:
+
+```bash
+curl -i https://rebirth-dungeon-server.zenp.workers.dev/auth/register \
+  -H 'Content-Type: application/json' -d '{}'
+```
+
+Expected: **400** with Zod validation issues, not 404. A 503 indicates startup/configuration or storage failure; check Worker logs for sanitized failure codes.
+
+Use a Workers Paid plan for this password-hashing workload: Argon2 intentionally consumes CPU, and local tests do not enforce production CPU limits. Keep the existing 19 MiB/two-iteration security settings and measure production CPU before tuning limits. See [Cloudflare limits](https://developers.cloudflare.com/workers/platform/limits/). Worker logs/traces are enabled; Node Observe instrumentation is not loaded into the Worker.
+
+## Cloudflare D1 and optional Node runtime
+
+The Worker injects native Drizzle D1 through `@nestjs/drizzle`. Each query starts a fresh `first-primary` session; bookmarks and request data are never shared through the singleton Nest container. Use parameterized queries and `db.batch()` for atomic statements; D1 does not support interactive transactions.
+
+Tables live under `src/db/schema/` and are exported from `src/db/schema.ts`. Use `npm run db:generate` and review/commit generated migrations. Timestamps use SQLite `timestamp_ms`, application `Date`, and ISO response strings.
+
+For optional Node development, fill `.env` from `.env.example`, use the same `D1_PROXY_TOKEN` in `.dev.vars`, then run `npm run proxy:dev` and `npm run start:dev` in separate terminals. The retained `wrangler.proxy.jsonc` targets the separate `rebirth-dungeon-d1` proxy. It is not the API deployment config. Never deploy the proxy entrypoint over the API Worker.
+
+## Checks
+
+```bash
+npm run build
+npm run lint
+npm test
+npm run test:e2e
+npm run test:auth
+npm run test:worker
+npm run worker:check
+npm run worker:dry-run
+```
+
+Integration checks use temporary local databases and dummy email configuration. They do not migrate remote databases, deploy Workers, or send real email.
 
 ## Authentication
 
 The Nest server exposes JSON authentication for the game client:
 
-| Endpoint | Request body | Success |
-| --- | --- | --- |
+| Endpoint              | Request body                                                              | Success                              |
+| --------------------- | ------------------------------------------------------------------------- | ------------------------------------ |
 | `POST /auth/register` | `{ "email": "player@example.com", "password": "a long secure password" }` | `201`, creates the user and signs in |
-| `POST /auth/login` | Same email/password body | `200`, replaces the previous session |
-| `POST /auth/refresh` | `{ "refreshToken": "<current refresh token>" }` | `200`, rotates the refresh token |
+| `POST /auth/login`    | Same email/password body                                                  | `200`, replaces the previous session |
+| `POST /auth/refresh`  | `{ "refreshToken": "<current refresh token>" }`                           | `200`, rotates the refresh token     |
 
 All three return:
 
@@ -67,35 +107,29 @@ All three return:
 
 ### Setup
 
-1. Copy `.env.example` to `.env` and configure the existing D1/KV proxy URLs and shared proxy token. Set `JWT_ACCESS_SECRET` to a cryptographically random value of at least 32 bytes (`openssl rand -base64 48`). Keep the JWT secret on the Nest server; use the same secret across its replicas.
-2. For local development, configure `.dev.vars` from `.dev.vars.example`. Apply the initial migration once to local D1:
-
-   ```bash
-   npx wrangler d1 execute DB --local --file drizzle/20260923195301_chunky_sumo/migration.sql
-   ```
-
-3. Run `npm run worker:dev` and `npm run start:dev` in separate terminals.
-4. For production, replace the D1/KV placeholder IDs, configure the Worker secret, and set remote Drizzle credentials in `.env`. Apply migrations with `npm run db:migrate`, deploy the Worker, and point Nest at its HTTPS URLs. Deploy the updated Worker together with authentication: it supplies primary reads and sanitized duplicate-email errors. No remote resources or migrations are created by the tests.
+Follow the Workers setup above. The optional Node setup uses `.env` and the proxy. Both runtimes share the same users, password format, and token contracts.
 
 ### Session rules
 
-Send access tokens as `Authorization: Bearer <accessToken>`. Routes are protected by default; use `@Public()` for intentionally public handlers. The existing `GET /` health/example route and the three authentication endpoints are public. The guard attaches `{ userId, sessionId }` to `request.user` on protected requests.
+Send access tokens as `Authorization: Bearer <accessToken>`. Routes are protected by default; use `@Public()` for intentionally public handlers. The three authentication endpoints are public; `GET /` is intentionally absent. The guard attaches `{ userId, sessionId }` to `request.user` on protected requests.
 
 Access JWTs use HS256, issuer `rebirth-dungeon-server`, audience `rebirth-dungeon-game`, and a maximum lifetime of 15 minutes. Every protected request also checks the current session through a D1 `first-primary` session. A new login replaces the user's single session and invalidates both previous tokens immediately for subsequent checks. Already authorized in-flight requests may finish. KV does not store authentication state.
 
 Refresh sessions expire seven days after login. Refresh rotates a 32-byte random token but preserves the session ID and absolute expiration; access JWT expiry is capped by that expiration. Store the latest refresh token after each success and serialize refresh calls in the client. Only one concurrent use of a refresh token succeeds. Consumed tokens return `401` without revoking the replacement; if the rotation response is lost, sign in again. Passwords use Argon2id (19 MiB, two iterations, one lane), and only SHA-256 refresh token hashes are stored. User and session timestamps are UTC milliseconds in D1 and ISO strings in JSON. Future user updates must also set `updatedAt`.
 
-Email is trimmed and lowercased, validated, and unique. Passwords require 12–128 characters and are never trimmed. Unknown fields are rejected. Responses use `Cache-Control: no-store`; Observe request capture is disabled and authentication routes are excluded from tracing, with sensitive-field redaction configured. Do not add request/token logging or response caching to these endpoints.
+Email is trimmed and lowercased, validated, and unique. Passwords require 12–128 characters and are never trimmed. Unknown fields are rejected. Responses use `Cache-Control: no-store`; Node Observe request capture is disabled. Worker logs retain safe email outcome counts and sanitized startup failures; do not enable raw exception/request logging. Do not add request/token logging or response caching to these endpoints.
 
-Errors: `400` invalid input, `401` invalid credentials or token, `409` duplicate email, `429` rate limited, and `503` unavailable authentication storage. Login errors do not distinguish unknown email from incorrect password. Register/login allow 10 requests per IP per minute per endpoint; refresh allows 30. Limits are in memory per Nest process. Multiple replicas need shared or edge rate limiting. Fastify proxy trust is unchanged, so configure trusted proxies deliberately before relying on forwarded client IPs.
+Errors: `400` invalid input, `401` invalid credentials or token, `409` duplicate email, `429` rate limited, and `503` unavailable authentication storage. Login errors do not distinguish unknown email from incorrect password. Register/login allow 10 requests per IP per minute per endpoint; refresh allows 30. Limits are in memory per Nest process/Worker isolate, not globally coordinated. Workers use Cloudflare’s ingress `CF-Connecting-IP` header and timestamp-based counters without background timers. Do not expose that trust policy on a non-Cloudflare host. Node Express proxy trust is disabled by default. Distributed protection needs a separate edge rate-limit policy.
 
 ### Verification
 
-`npm run test:auth` builds the real Nest application and runs Fastify integration tests against a temporary local Wrangler/D1 instance, then removes that test database. It verifies validation, password hashing, duplicate registration races, atomic registration rollback, session replacement, refresh races and replay, JWT validation, expiry, throttling, and sanitized outages. `npm test`, `npm run test:e2e`, `npm run worker:check`, and `npm run worker:dry-run` cover the existing server and Worker checks.
+`npm run test:worker` runs the compiled Express/Nest API inside local workerd with an isolated D1 database. It verifies routes, docs, native/Worker Argon2 compatibility (including Unicode), and refresh races.
+
+`npm run test:auth` builds the real Nest application and runs Express integration tests against a temporary local Wrangler/D1 instance, then removes that test database. It verifies validation, password hashing, duplicate registration races, atomic registration rollback, session replacement, refresh races and replay, JWT validation, expiry, throttling, and sanitized outages. `npm test`, `npm run test:e2e`, `npm run worker:check`, and `npm run worker:dry-run` cover the existing server and Worker checks.
 
 ## Cloudflare KV cache
 
-Nest's global `CacheModule` uses Cloudflare KV through the existing authenticated Worker at `/cache`. Configure `KV_PROXY_URL` in `.env` (locally `http://127.0.0.1:8787/cache`); it shares the Worker's `D1_PROXY_TOKEN`. Create a remote namespace with `npx wrangler kv namespace create CACHE` and replace `REPLACE_WITH_KV_NAMESPACE_ID` in `wrangler.jsonc` with its ID before deploying. Local `worker:dev` uses local KV automatically.
+The Worker’s global `CacheModule` uses the native `CACHE` binding. The namespace ID is configured in `wrangler.jsonc`; the binding name must remain `CACHE`. The optional Node runtime uses `KV_PROXY_URL` and `D1_PROXY_TOKEN` through `wrangler.proxy.jsonc`.
 
 Inject `CACHE_MANAGER` to cache selected data:
 
@@ -119,98 +153,6 @@ TTLs are milliseconds and default to 60,000; `0` means no expiration. Keyv check
 
 KV is eventually consistent: updates and deletions can take 60 seconds or longer to appear elsewhere, and each key supports at most one write per second. Use this for reusable, read-heavy data that can tolerate stale reads; keep authoritative game state and coordination outside this cache. See the [Nest caching docs](https://docs.nestjs.com/techniques/caching) and [KV write and expiration rules](https://developers.cloudflare.com/kv/api/write-key-value-pairs/).
 
-## Project setup
-
-```bash
-$ pnpm install
-```
-
-## Compile and run the project
-
-```bash
-# development
-$ pnpm run start
-
-# watch mode
-$ pnpm run start:dev
-
-# production mode
-$ pnpm run start:prod
-```
-
-## Run tests
-
-```bash
-# unit tests
-$ pnpm run test
-
-# e2e tests
-$ pnpm run test:e2e
-
-# test coverage
-$ pnpm run test:cov
-```
-
-## Deployment
-
-When you're ready to deploy your NestJS application to production, there are some key steps you can take to ensure it runs as efficiently as possible. Check out the [deployment documentation](https://docs.nestjs.com/deployment) for more information.
-
-If you are looking for a cloud-based platform to deploy your NestJS application, check out [Mau](https://mau.nestjs.com), our official platform for deploying NestJS applications on AWS. Mau makes deployment straightforward and fast, requiring just a few simple steps:
-
-```bash
-$ pnpm install -g @nestjs/mau
-$ mau deploy
-```
-
-With Mau, you can deploy your application in just a few clicks, allowing you to focus on building features rather than managing infrastructure.
-
-## Observability
-
-In production applications, observability is essential for understanding how your system behaves, detecting issues early, and maintaining reliable performance.
-
-[NestJS Observe](https://observe.nestjs.com) automatically instruments your NestJS application, giving you deep visibility into your system with minimal setup:
-
-- **Distributed tracing:** Follow requests across services and understand how they flow through your system.
-- **Waterfall analysis:** Visualize request execution and identify slow operations, bottlenecks, and unexpected delays.
-- **Performance analysis:** Analyze application performance in real time and quickly pinpoint areas that need optimization.
-- **Metrics:** Track key application and infrastructure metrics to understand system health and performance trends.
-- **Logging:** Centralize and correlate logs with traces and other telemetry to make debugging easier.
-- **Error tracking:** Detect errors quickly and investigate their root causes with the surrounding context.
-- **SLA monitoring:** Track service-level objectives and identify when your application is approaching or exceeding defined thresholds.
-- **Alarms and alerts:** Set up alerts for critical errors, performance degradation, SLA violations, and other anomalies so your team can react quickly.
-
-This project is already instrumented. Create a free account at [observe.nestjs.com](https://observe.nestjs.com), add an application, and paste the generated app key and secret into the `ObserveModule.forRoot()` call in `src/app.module.ts`.
-
-The free plan needs no payment details and covers 300,000 events a month. You can also browse the [live demo](https://www.observe-demo.nestjs.com/dashboard) first - the whole dashboard over a busy service's data, with nothing to install.
-
-## Resources
-
-Check out a few resources that may come in handy when working with NestJS:
-
-- Visit the [NestJS Documentation](https://docs.nestjs.com) to learn more about the framework.
-- For questions and support, please visit our [Discord channel](https://discord.gg/G7Qnnhy).
-- To dive deeper and get more hands-on experience, check out our official video [courses](https://courses.nestjs.com/).
-- Deploy your application to AWS with the help of [NestJS Mau](https://mau.nestjs.com) in just a few clicks.
-- Auto-instrument your application with [NestJS Observe](https://observe.nestjs.com). Distributed tracing, metrics, and logging made easy. Error tracking and performance monitoring for your NestJS applications.
-- Visualize your application graph and interact with the NestJS application in real-time using [NestJS Devtools](https://devtools.nestjs.com).
-- Need help with your project (part-time to full-time)? Check out our official [enterprise support](https://enterprise.nestjs.com).
-- To stay in the loop and get updates, follow us on [X](https://x.com/nestframework) and [LinkedIn](https://linkedin.com/company/nestjs).
-- Looking for a job, or have a job to offer? Check out our official [Jobs board](https://jobs.nestjs.com).
-
-## Support
-
-Nest is an MIT-licensed open source project. It can grow thanks to the sponsors and support by the amazing backers. If you'd like to join them, please [read more here](https://docs.nestjs.com/support).
-
-## Stay in touch
-
-- Author - [Kamil Myśliwiec](https://twitter.com/kammysliwiec)
-- Website - [https://nestjs.com](https://nestjs.com/)
-- Twitter - [@nestframework](https://twitter.com/nestframework)
-
-## License
-
-Nest is [MIT licensed](https://github.com/nestjs/nest/blob/master/LICENSE).
-
 ## Request validation with Zod
 
 All authentication request bodies use strict Zod object schemas in `src/auth/auth.dto.ts` and the reusable `ZodValidationPipe` in `src/validation/zod-validation.pipe.ts`. Types are inferred from the schemas. The pipe supports async refinements, returns parsed/transformed data, and reports HTTP 400 with `{ statusCode, error, message, issues: [{ path, code, message }] }`. Submitted values are not included in validation errors.
@@ -219,27 +161,27 @@ For new route inputs, declare a Zod schema and attach `new ZodValidationPipe(sch
 
 ## Scalar and OpenAPI
 
-With Nest running (default port 3000), open:
+With `npm run worker:dev`, use port **8787**. The optional Node runtime uses port **3000**. The same paths are served on the deployed Worker:
 
-- Scalar API reference: [http://localhost:3000/docs](http://localhost:3000/docs)
-- OpenAPI JSON: [http://localhost:3000/openapi.json](http://localhost:3000/openapi.json)
-- OpenAPI YAML: [http://localhost:3000/openapi.yaml](http://localhost:3000/openapi.yaml)
+- Scalar API reference: [http://localhost:8787/docs](http://localhost:8787/docs)
+- OpenAPI JSON: [http://localhost:8787/openapi.json](http://localhost:8787/openapi.json)
+- OpenAPI YAML: [http://localhost:8787/openapi.yaml](http://localhost:8787/openapi.yaml)
 
 These documentation URLs are publicly accessible. Scalar's API client sends real requests to this server. Register, login, and refresh are documented with request constraints, token/user response fields, status codes, rate limits, and session replacement/rotation behavior. Request schemas are generated from Zod; custom password refinements carry explicit JSON Schema metadata.
 
-Use Scalar’s **Authentication** controls to enter an access token for protected routes. The OpenAPI default is Bearer authentication; existing public auth operations explicitly override it. Authorization is not persisted across browser reloads. For a new public route, add both `@Public()` and `@ApiOperation({ security: [] })`; add operation, body, and response documentation to new routes. Configuration lives in `src/openapi/configure-openapi.ts` and is shared by production and tests through `configureApp()`.
+Use Scalar’s **Authentication** controls to enter an access token for protected routes. The OpenAPI default is Bearer authentication; existing public auth operations explicitly override it. Authorization is not persisted across browser reloads. For a new public route, add both `@Public()` and `@ApiOperation({ security: [] })`; add operation, body, and response documentation to new routes. Shared OpenAPI generation lives in `src/openapi/configure-document.ts`; both runtimes use `configureApp()` and the same Express Scalar adapter.
 
-Scalar is registered with `@scalar/fastify-api-reference` and serves its JavaScript at `/docs/js/scalar.js` from the application. Default external fonts and telemetry are disabled, and authorization is not persisted. `@nestjs/swagger` remains responsible for generating the OpenAPI document from route annotations; its Swagger UI is disabled.
+Scalar uses `@scalar/express-api-reference` in both runtimes and serves its JavaScript at `/docs/js/scalar.js` from the application. `tools/build-worker-assets.mjs` copies the locked `@scalar/api-reference` standalone browser bundle at build time, so both runtimes serve the same local UI without a runtime CDN dependency. Default external fonts and telemetry are disabled, and authorization is not persisted. `@nestjs/swagger` remains responsible for generating the OpenAPI document from route annotations; its Swagger UI is disabled.
 
-References: [Scalar Fastify integration](https://guides.scalar.com/scalar/scalar-api-references/integrations/fastify), [Nest OpenAPI generation](https://docs.nestjs.com/openapi/introduction).
+References: [Scalar Express integration](https://scalar.com/products/api-references/integrations/express), [Nest OpenAPI generation](https://docs.nestjs.com/openapi/introduction).
 
 ## Cloudflare Email Sending
 
-`EmailModule` exports an injectable `EmailService` for internal transactional sends. Import `EmailModule` in each module that needs the service. It calls Cloudflare directly from Node.js; it does not use the D1/KV proxy. Registration, login, refresh, and the public OpenAPI routes do not send email.
+`EmailModule` exports an injectable `EmailService` for internal transactional sends. Import `EmailModule` in each module that needs the service. It calls Cloudflare directly through the REST transport from either runtime; it does not use the D1/KV proxy. Registration, login, refresh, and the public OpenAPI routes do not send email.
 
 ### Required configuration
 
-The Nest application now refuses to start without valid email configuration, even if no email is being sent. Set these variables in `.env` locally and in your host's secret/environment configuration in production:
+The Nest application now refuses to start without valid email configuration, even if no email is being sent. Set these variables in `.dev.vars` for local Workers, `.env` for Node/email CLI, and Worker secrets/vars in production:
 
 ```dotenv
 CLOUDFLARE_ACCOUNT_ID=<32-character Cloudflare account ID>
