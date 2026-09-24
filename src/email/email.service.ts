@@ -36,10 +36,7 @@ export class EmailService {
       this.logger.log({
         event: 'email_send_result',
         durationMs: Math.round(performance.now() - start),
-        delivered: result.delivered.length,
-        queued: result.queued.length,
-        permanentBounces: result.permanentBounces.length,
-        suppressedRecipients: result.suppressedRecipients.length,
+        status: result.status,
       });
       return result;
     } catch (error) {

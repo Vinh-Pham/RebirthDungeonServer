@@ -4,12 +4,7 @@ import { EmailService } from './email.service.js';
 import { renderEmailTemplate } from './render-email-template.js';
 import TestEmail, { TEST_EMAIL_SUBJECT } from './templates/test-email.js';
 
-const result = {
-  delivered: [],
-  queued: ['reader@example.com'],
-  permanentBounces: [],
-  suppressedRecipients: [],
-};
+const result = { status: 'accepted', messageId: 'test-message-id' };
 
 afterEach(() => vi.restoreAllMocks());
 

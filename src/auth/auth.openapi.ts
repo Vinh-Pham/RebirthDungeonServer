@@ -86,14 +86,18 @@ export function ApiAuthErrors() {
     }),
     ApiResponse({
       status: 429,
-      description: 'Per-IP, per-process rate limit exceeded.',
+      description:
+        'Approximate per-IP, per-route Cloudflare location rate limit exceeded. Retry after 60 seconds.',
       schema: schemaRef('ApiError'),
-      headers: noStoreHeaders,
+      headers: {
+        ...noStoreHeaders,
+        'Retry-After': { schema: { type: 'integer', example: 60 } },
+      },
     }),
     ApiResponse({
       status: 503,
       description:
-        'Authentication storage unavailable. No database details are exposed.',
+        'Authentication storage or rate limiting unavailable. No database details are exposed.',
       schema: schemaRef('ApiError'),
       headers: noStoreHeaders,
     }),

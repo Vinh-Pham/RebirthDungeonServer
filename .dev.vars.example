@@ -1,10 +1,5 @@
-# Required by the full Nest API Worker (never commit real values).
+# Runtime secret; never commit real values.
 JWT_ACCESS_SECRET=
-CLOUDFLARE_ACCOUNT_ID=
-CLOUDFLARE_EMAIL_API_TOKEN=
-# Sender defaults are in wrangler.jsonc; override locally if needed.
+# Sender defaults are in wrangler.jsonc.
 EMAIL_FROM=noreply@rebirthdungeon.com
 EMAIL_FROM_NAME=Rebirth Dungeon
-
-# Only needed for optional Node.js + wrangler.proxy.jsonc development.
-D1_PROXY_TOKEN=

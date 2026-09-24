@@ -1,49 +1,46 @@
 import request from 'supertest';
-import { readScalarAsset } from '../src/openapi/read-scalar-asset.js';
-import { EMAIL_TRANSPORT } from '../src/email/email.transport.js';
 import { configureApp } from '../src/configure-app.js';
 import { Test, TestingModule } from '@nestjs/testing';
-import { getDrizzleToken } from '@nestjs/drizzle';
+import { PRIMARY_DATABASE } from '../src/db/primary-database.js';
+import { authConfig } from '../src/auth/auth.config.js';
 import {
   ExpressAdapter,
   NestExpressApplication,
 } from '@nestjs/platform-express';
-import { AppModule } from './../src/app.module.js';
+import { AuthModule } from '../src/auth/auth.module.js';
 
 describe('Application routes (e2e)', () => {
   let app: NestExpressApplication;
 
   beforeEach(async () => {
-    vi.stubEnv('D1_PROXY_URL', 'http://localhost:8787/query');
-    vi.stubEnv('KV_PROXY_URL', 'http://localhost:8787/cache');
-    vi.stubEnv('D1_PROXY_TOKEN', 'test-token');
-    vi.stubEnv('CLOUDFLARE_ACCOUNT_ID', 'a'.repeat(32));
-    vi.stubEnv('CLOUDFLARE_EMAIL_API_TOKEN', 'test-email-token');
-    vi.stubEnv('EMAIL_FROM', 'noreply@rebirthdungeon.com');
-    vi.stubEnv(
-      'JWT_ACCESS_SECRET',
-      'test-secret-at-least-thirty-two-bytes-long',
-    );
     const moduleFixture: TestingModule = await Test.createTestingModule({
-      imports: [AppModule],
-    })
-      .overrideProvider(EMAIL_TRANSPORT)
-      .useValue({
-        send: vi.fn(() => {
-          throw new Error('Unexpected email send');
+      imports: [
+        AuthModule.register({
+          config: authConfig('test-secret-at-least-thirty-two-bytes-long'),
+          passwords: {
+            hash: async () => 'unused-hash',
+            verify: async () => false,
+          },
+          database: () => {
+            throw new Error('Unexpected database operation');
+          },
+          limits: {
+            credentials: { limit: async () => ({ success: true }) },
+            refresh: { limit: async () => ({ success: true }) },
+          },
         }),
-      })
-      .compile();
+      ],
+    }).compile();
 
     app = moduleFixture.createNestApplication<NestExpressApplication>(
       new ExpressAdapter(),
     );
-    configureApp(app, await readScalarAsset());
+    configureApp(app);
     await app.init();
   });
 
   it('registers D1 and leaves the removed root route unavailable', async () => {
-    expect(app.get(getDrizzleToken())).toHaveProperty('select');
+    expect(app.get(PRIMARY_DATABASE)).toBeTypeOf('function');
     const response = await request(app.getHttpServer()).get('/');
     expect(response.statusCode).toBe(404);
   });
@@ -63,7 +60,7 @@ describe('Application routes (e2e)', () => {
     },
   );
 
-  it('serves Scalar and its local browser assets without authentication', async () => {
+  it('serves Scalar referencing the public static asset without authentication', async () => {
     const redirect = await request(app.getHttpServer()).get('/docs');
     expect(redirect.statusCode).toBe(301);
     expect(redirect.headers.location).toBe('/docs/');
@@ -75,9 +72,6 @@ describe('Application routes (e2e)', () => {
     expect(response.text).toContain('<title>Rebirth Dungeon API</title>');
     expect(response.text).toContain('/openapi.json');
     expect(response.text).not.toContain('swagger-ui');
-    const asset = await request(app.getHttpServer()).get('/docs/js/scalar.js');
-    expect(asset.statusCode).toBe(200);
-    expect(asset.headers['content-type']).toMatch(/javascript/);
   });
 
   it('exports all auth operations with Zod input constraints and public security overrides', async () => {

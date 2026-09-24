@@ -2,79 +2,86 @@ import { Inject, Injectable } from '@nestjs/common';
 import { EMAIL_CONFIG, type EmailConfig } from './email.config.js';
 import { EmailSendError, type EmailErrorCode } from './email.error.js';
 import {
-  emailFailureSchema,
-  emailSuccessSchema,
+  emailAcceptanceSchema,
   type EmailMessage,
   type EmailSendResult,
 } from './email.schemas.js';
 import type { EmailTransport } from './email.transport.js';
 
+export const EMAIL_BINDING = Symbol('EMAIL_BINDING');
+const FAILURE_CODES: Record<string, EmailErrorCode> = {
+  E_VALIDATION_ERROR: 'REJECTED',
+  E_FIELD_MISSING: 'REJECTED',
+  E_TOO_MANY_RECIPIENTS: 'REJECTED',
+  E_TOO_MANY_ATTACHMENTS: 'REJECTED',
+  E_RECIPIENT_NOT_ALLOWED: 'REJECTED',
+  E_RECIPIENT_SUPPRESSED: 'REJECTED',
+  E_CONTENT_TOO_LARGE: 'REJECTED',
+  E_DELIVERY_FAILED: 'REJECTED',
+  E_HEADER_NOT_ALLOWED: 'REJECTED',
+  E_HEADER_USE_API_FIELD: 'REJECTED',
+  E_HEADER_VALUE_INVALID: 'REJECTED',
+  E_HEADER_VALUE_TOO_LONG: 'REJECTED',
+  E_HEADER_NAME_INVALID: 'REJECTED',
+  E_HEADERS_TOO_LARGE: 'REJECTED',
+  E_HEADERS_TOO_MANY: 'REJECTED',
+  E_SENDER_NOT_VERIFIED: 'AUTHORIZATION',
+  E_SENDER_DOMAIN_NOT_AVAILABLE: 'AUTHORIZATION',
+  E_RATE_LIMIT_EXCEEDED: 'RATE_LIMITED',
+  E_DAILY_LIMIT_EXCEEDED: 'RATE_LIMITED',
+  E_INTERNAL_SERVER_ERROR: 'PROVIDER_FAILURE',
+};
+
 @Injectable()
 export class CloudflareEmailTransport implements EmailTransport {
-  constructor(@Inject(EMAIL_CONFIG) private readonly config: EmailConfig) {}
+  constructor(
+    @Inject(EMAIL_CONFIG) private readonly config: EmailConfig,
+    @Inject(EMAIL_BINDING) private readonly binding: { client: SendEmail },
+  ) {}
 
   async send(message: EmailMessage): Promise<EmailSendResult> {
-    let response: Response;
+    let timer: ReturnType<typeof setTimeout> | undefined;
     try {
-      response = await fetch(
-        `https://api.cloudflare.com/client/v4/accounts/${this.config.accountId}/email/sending/send`,
-        {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${this.config.apiToken}`,
-            'Content-Type': 'application/json',
-          },
-          signal: AbortSignal.timeout(10_000),
-          redirect: 'error',
-          body: JSON.stringify({
-            from: { address: this.config.from, name: this.config.fromName },
-            to: message.to,
-            subject: message.subject,
-            text: message.text,
-            html: message.html,
-            ...(message.replyTo ? { reply_to: message.replyTo } : {}),
-          }),
-        },
+      const result = await Promise.race([
+        this.binding.client.send({
+          from: { email: this.config.from, name: this.config.fromName },
+          to: message.to,
+          subject: message.subject,
+          text: message.text,
+          html: message.html,
+          ...(message.replyTo ? { replyTo: message.replyTo } : {}),
+        }),
+        new Promise<never>((_resolve, reject) => {
+          timer = setTimeout(
+            () => reject(new EmailSendError('UNCERTAIN_OUTCOME')),
+            10_000,
+          );
+        }),
+      ]);
+      const parsed = emailAcceptanceSchema.safeParse(result);
+      if (!parsed.success) throw new EmailSendError('UNCERTAIN_OUTCOME');
+      return { status: 'accepted', messageId: parsed.data.messageId };
+    } catch (error) {
+      if (error instanceof EmailSendError) throw error;
+      const providerCode =
+        typeof error === 'object' &&
+        error !== null &&
+        'code' in error &&
+        typeof error.code === 'string'
+          ? error.code
+          : undefined;
+      // Only allowlisted codes are safe to log; raw provider messages can contain recipients.
+      const code =
+        providerCode && Object.hasOwn(FAILURE_CODES, providerCode)
+          ? FAILURE_CODES[providerCode]
+          : undefined;
+      throw new EmailSendError(
+        code ?? 'UNCERTAIN_OUTCOME',
+        code && providerCode ? [providerCode] : [],
       );
-    } catch {
-      // The provider may have accepted the message before the connection failed.
-      throw new EmailSendError('UNCERTAIN_OUTCOME');
+    } finally {
+      clearTimeout(timer);
     }
-    const body: unknown = await response.json().catch(() => undefined);
-    const parsed = emailSuccessSchema.safeParse(body);
-    if (!response.ok || !parsed.success) {
-      const failure = emailFailureSchema.safeParse(body);
-      const codes = failure.success
-        ? failure.data.errors.map(({ code }) => code)
-        : [];
-      let code: EmailErrorCode;
-      if (response.status === 401 || response.status === 403)
-        code = 'AUTHORIZATION';
-      else if (response.status === 429) code = 'RATE_LIMITED';
-      else if (response.status >= 400 && response.status < 500)
-        code = 'REJECTED';
-      else if (
-        response.status >= 500 ||
-        (typeof body === 'object' &&
-          body !== null &&
-          'success' in body &&
-          body.success === false)
-      )
-        code = 'PROVIDER_FAILURE';
-      else code = 'UNCERTAIN_OUTCOME';
-      throw new EmailSendError(code, codes, response.status);
-    }
-    const result = parsed.data.result;
-    if (
-      ![
-        ...result.delivered,
-        ...result.queued,
-        ...result.permanentBounces,
-        ...result.suppressedRecipients,
-      ].includes(message.to)
-    ) {
-      throw new EmailSendError('UNCERTAIN_OUTCOME');
-    }
-    return result;
+    // A caller timeout does not cancel delivery. Never automatically retry.
   }
 }

@@ -4,8 +4,7 @@ export interface AuthConfig {
   issuer: string;
   audience: string;
 }
-export function authConfig(): AuthConfig {
-  const secret = process.env.JWT_ACCESS_SECRET ?? '';
+export function authConfig(secret: string = ''): AuthConfig {
   if (Buffer.byteLength(secret) < 32)
     throw new Error('JWT_ACCESS_SECRET must contain at least 32 bytes');
   return {

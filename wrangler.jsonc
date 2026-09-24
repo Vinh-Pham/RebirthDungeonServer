@@ -1,9 +1,11 @@
+// Optional Nest integrations are deliberately unavailable; keep these aliases fail-fast.
+// The synthetic URL only initializes unused Nest optional filesystem loaders.
 {
   "name": "rebirth-dungeon-server",
   "main": "dist/worker/main.js",
-  // Nest optional-package helpers create a require function at module load.
-  // Workers have no module filesystem URL; these optional filesystem paths are unused.
-  "define": { "import.meta.url": "\"file:///worker/main.js\"" },
+  "define": {
+    "import.meta.url": "\"file:///worker/main.js\"",
+  },
   "alias": {
     "@fastify/static": "./dist/worker/unsupported-package.js",
     "class-validator": "./dist/worker/unsupported-package.js",
@@ -12,7 +14,9 @@
     "@nestjs/microservices/microservices-module.js": "./dist/worker/unsupported-package.js",
     "@nestjs/websockets/socket-module.js": "./dist/worker/unsupported-package.js",
   },
-  "build": { "command": "npm run build" },
+  "build": {
+    "command": "npm run build",
+  },
   "compatibility_flags": ["nodejs_compat"],
   "vars": {
     "EMAIL_FROM": "noreply@rebirthdungeon.com",
@@ -33,11 +37,7 @@
     },
   ],
   "secrets": {
-    "required": [
-      "JWT_ACCESS_SECRET",
-      "CLOUDFLARE_ACCOUNT_ID",
-      "CLOUDFLARE_EMAIL_API_TOKEN",
-    ],
+    "required": ["JWT_ACCESS_SECRET"],
   },
   "observability": {
     "enabled": true,
@@ -50,4 +50,30 @@
       "head_sampling_rate": 0.01,
     },
   },
+  "assets": {
+    "directory": "./dist/assets",
+  },
+  "send_email": [
+    {
+      "name": "EMAIL",
+    },
+  ],
+  "ratelimits": [
+    {
+      "name": "AUTH_RATE_LIMIT",
+      "namespace_id": "2026092301",
+      "simple": {
+        "limit": 10,
+        "period": 60,
+      },
+    },
+    {
+      "name": "REFRESH_RATE_LIMIT",
+      "namespace_id": "2026092302",
+      "simple": {
+        "limit": 30,
+        "period": 60,
+      },
+    },
+  ],
 }

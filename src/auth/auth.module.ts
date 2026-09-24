@@ -2,42 +2,43 @@ import { PASSWORD_HASHER, type PasswordHasher } from './password-hasher.js';
 import { Module, type DynamicModule } from '@nestjs/common';
 import { APP_GUARD } from '@nestjs/core';
 import { JwtModule } from '@nestjs/jwt';
-import {
-  ThrottlerModule,
-  type ThrottlerStorage,
-  type ThrottlerGetTrackerFunction,
-} from '@nestjs/throttler';
-import { AUTH_CONFIG, authConfig } from './auth.config.js';
+import { AUTH_CONFIG, type AuthConfig } from './auth.config.js';
 import { AuthController } from './auth.controller.js';
 import { AuthGuard } from './auth.guard.js';
 import { AuthRepository } from './auth.repository.js';
 import { AuthService } from './auth.service.js';
-@Module({
-  imports: [JwtModule.register({})],
-  controllers: [AuthController],
-  providers: [
-    AuthRepository,
-    AuthService,
-    { provide: AUTH_CONFIG, useFactory: authConfig },
-    { provide: APP_GUARD, useClass: AuthGuard },
-  ],
-})
+import {
+  AUTH_RATE_LIMITS,
+  AuthRateLimitGuard,
+  type AuthRateLimits,
+} from './rate-limit.guard.js';
+import {
+  PRIMARY_DATABASE,
+  type PrimaryDatabaseFactory,
+} from '../db/primary-database.js';
+
+@Module({})
 export class AuthModule {
-  static register(
-    passwords: PasswordHasher,
-    getTracker?: ThrottlerGetTrackerFunction,
-    storage?: ThrottlerStorage,
-  ): DynamicModule {
+  static register(options: {
+    passwords: PasswordHasher;
+    config: AuthConfig;
+    database: PrimaryDatabaseFactory;
+    limits: AuthRateLimits;
+  }): DynamicModule {
     return {
       module: AuthModule,
-      imports: [
-        ThrottlerModule.forRoot({
-          throttlers: [{ ttl: 60000, limit: 10 }],
-          getTracker,
-          storage,
-        }),
+      imports: [JwtModule.register({})],
+      controllers: [AuthController],
+      providers: [
+        AuthRepository,
+        AuthService,
+        AuthRateLimitGuard,
+        { provide: APP_GUARD, useClass: AuthGuard },
+        { provide: PASSWORD_HASHER, useValue: options.passwords },
+        { provide: AUTH_CONFIG, useValue: options.config },
+        { provide: PRIMARY_DATABASE, useValue: options.database },
+        { provide: AUTH_RATE_LIMITS, useValue: options.limits },
       ],
-      providers: [{ provide: PASSWORD_HASHER, useValue: passwords }],
     };
   }
 }

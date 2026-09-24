@@ -23,7 +23,7 @@ const messages: Record<EmailErrorCode, string> = {
 export class EmailSendError extends Error {
   constructor(
     readonly code: EmailErrorCode,
-    readonly providerCodes: number[] = [],
+    readonly providerCodes: string[] = [],
     readonly status?: number,
   ) {
     super(messages[code]);

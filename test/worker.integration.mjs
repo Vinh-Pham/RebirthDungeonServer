@@ -8,6 +8,8 @@ import { once } from 'node:events';
 import { setTimeout } from 'node:timers/promises';
 import { createServer } from 'node:net';
 import * as argon2 from 'argon2';
+import { JwtService } from '@nestjs/jwt';
+import { randomUUID } from 'node:crypto';
 
 await test(
   'Nest API runs inside workerd with native D1/KV',
@@ -31,12 +33,17 @@ await test(
     assert.equal(config.main, 'dist/worker/main.js');
     config.main = resolve('test/worker-fixture.mjs');
     delete config.build;
+    assert.ok(
+      config.send_email.every((binding) => binding.remote !== true),
+      'tests must never send real mail',
+    );
+    config.assets.directory = resolve(config.assets.directory);
     config.alias = Object.fromEntries(
       Object.entries(config.alias).map(([key, value]) => [key, resolve(value)]),
     );
     await writeFile(
       join(directory, '.dev.vars'),
-      `JWT_ACCESS_SECRET=test-only-secret-at-least-thirty-two-bytes\nCLOUDFLARE_ACCOUNT_ID=${'a'.repeat(32)}\nCLOUDFLARE_EMAIL_API_TOKEN=test-only-no-email-sending\n`,
+      `JWT_ACCESS_SECRET=test-only-secret-at-least-thirty-two-bytes\n`,
     );
     const configFile = join(directory, 'wrangler.json');
     await writeFile(configFile, JSON.stringify(config));
@@ -119,11 +126,19 @@ await test(
     });
     const origin = `http://127.0.0.1:${port}`;
     let ready = false;
+    let startupFailures = 0;
     for (let i = 0; i < 20; i++) {
       try {
         const response = await fetch(`${origin}/openapi.json`, {
           signal: AbortSignal.timeout(2000),
         });
+        if (response.status === 503) {
+          startupFailures++;
+          assert.deepEqual(await response.json(), {
+            statusCode: 503,
+            message: 'API unavailable',
+          });
+        }
         if (response.ok) {
           ready = true;
           break;
@@ -132,7 +147,13 @@ await test(
       if (worker.exitCode !== null) break;
       await setTimeout(250);
     }
-    assert.ok(ready, output);
+    assert.ok(ready, output.slice(-12000));
+    assert.equal(
+      startupFailures,
+      1,
+      'failed initialization must recover on the next request',
+    );
+    assert.ok(!output.includes('private-startup-fixture-error'));
     const post = (route, body, ip = '192.0.2.1') =>
       fetch(`${origin}/auth/${route}`, {
         method: 'POST',
@@ -158,7 +179,13 @@ await test(
           404,
         );
         assert.match(await (await fetch(`${origin}/docs/`)).text(), /scalar/i);
-        assert.equal((await fetch(`${origin}/docs/js/scalar.js`)).status, 200);
+        const asset = await fetch(`${origin}/docs/js/scalar.js`);
+        assert.equal(asset.status, 200);
+        assert.match(asset.headers.get('content-type'), /javascript/);
+        assert.equal(
+          await asset.text(),
+          await readFile('dist/assets/docs/js/scalar.js', 'utf8'),
+        );
         assert.equal((await fetch(`${origin}/openapi.yaml`)).status, 200);
       },
     );
@@ -177,6 +204,12 @@ await test(
         const content = await email.json();
         assert.match(content.html, /&lt;Adventurer&gt;/);
         assert.match(content.text, /Adventurer/);
+        const sent = await fetch(`${origin}/__test/send-email`);
+        assert.equal(sent.status, 200);
+        const result = await sent.json();
+        assert.equal(result.status, 'accepted');
+        assert.ok(result.messageId);
+        assert.deepEqual(Object.keys(result).sort(), ['messageId', 'status']);
       },
     );
     await t.test(
@@ -210,6 +243,19 @@ await test(
         registered = await response.json();
         assert.equal(registered.user.email, 'player@example.com');
         assert.equal(registered.refreshToken.length, 43);
+        assert.equal(registered.expiresIn, 900);
+        assert.equal(registered.tokenType, 'Bearer');
+        assert.deepEqual(Object.keys(registered.user).sort(), [
+          'createdAt',
+          'email',
+          'id',
+          'updatedAt',
+        ]);
+        const [session] = sql(
+          `SELECT refresh_token_hash FROM auth_sessions WHERE user_id = '${registered.user.id}'`,
+        );
+        assert.match(session.refresh_token_hash, /^[a-f0-9]{64}$/);
+        assert.notEqual(session.refresh_token_hash, registered.refreshToken);
         const [stored] = sql(
           "SELECT password_hash FROM users WHERE email = 'player@example.com'",
         );
@@ -283,18 +329,159 @@ await test(
       },
     );
     await t.test(
-      'Cloudflare client IPs have separate rate limits and errors stay private',
+      'native rate limits separate routes and clients without leaking errors',
       async () => {
-        for (let i = 0; i < 10; i++)
-          assert.equal((await post('login', {}, '192.0.2.8')).status, 400);
-        const response = await post('login', {}, '192.0.2.8');
-        assert.equal(response.status, 429);
-        assert.equal(response.headers.get('cache-control'), 'no-store');
+        let limited;
+        for (let i = 0; i < 100; i++) {
+          const response = await post('login', {}, '192.0.2.8');
+          if (response.status === 429) {
+            limited = response;
+            break;
+          }
+          assert.equal(response.status, 400);
+        }
+        assert.ok(limited, 'local limiter should eventually reject a burst');
+        assert.equal(limited.headers.get('retry-after'), '60');
+        assert.equal(limited.headers.get('cache-control'), 'no-store');
+        assert.equal(limited.headers.get('x-ratelimit-remaining'), null);
+        assert.equal((await post('register', {}, '192.0.2.8')).status, 400);
         assert.equal((await post('login', {}, '192.0.2.9')).status, 400);
         assert.ok(!output.includes(password));
         assert.ok(!output.includes(existingHash));
         assert.ok(!output.includes(registered.accessToken));
         assert.ok(!output.includes(registered.refreshToken));
+      },
+    );
+    const access = (token) =>
+      fetch(`${origin}/__test/protected`, {
+        headers: token ? { authorization: `Bearer ${token}` } : {},
+      });
+    await t.test(
+      'generic login errors, session replacement, JWT claims, and absolute expiry',
+      async () => {
+        const login = async (body) => post('login', body, '192.0.2.30');
+        const wrong = await login({
+          email: 'player@example.com',
+          password: 'another long password',
+        });
+        const unknown = await login({ email: 'unknown@example.com', password });
+        assert.equal(wrong.status, 401);
+        assert.equal(unknown.status, 401);
+        assert.deepEqual(await wrong.json(), await unknown.json());
+        const first = await (
+          await login({ email: 'player@example.com', password })
+        ).json();
+        assert.equal((await access(first.accessToken)).status, 200);
+        const second = await (
+          await login({ email: 'player@example.com', password })
+        ).json();
+        assert.equal((await access(first.accessToken)).status, 401);
+        assert.equal(
+          (
+            await post(
+              'refresh',
+              { refreshToken: first.refreshToken },
+              '192.0.2.31',
+            )
+          ).status,
+          401,
+        );
+        assert.equal((await access(second.accessToken)).status, 200);
+        assert.equal((await access()).status, 401);
+        assert.equal((await access('not-a-jwt')).status, 401);
+        const jwt = new JwtService();
+        const payload = jwt.decode(second.accessToken);
+        for (const overrides of [
+          { exp: 1 },
+          { aud: 'wrong' },
+          { iss: 'wrong' },
+          { sid: randomUUID() },
+          { sub: null },
+        ]) {
+          const token = jwt.sign(
+            { ...payload, ...overrides },
+            {
+              secret: 'test-only-secret-at-least-thirty-two-bytes',
+              algorithm: 'HS256',
+            },
+          );
+          assert.equal((await access(token)).status, 401);
+        }
+        assert.equal(
+          (await access(jwt.sign(payload, { secret: 'wrong-secret' }))).status,
+          401,
+        );
+        assert.equal(
+          (
+            await access(
+              jwt.sign(payload, {
+                secret: 'test-only-secret-at-least-thirty-two-bytes',
+                noTimestamp: true,
+              }),
+            )
+          ).status,
+          401,
+        );
+        const expiry = Date.now() + 60000;
+        sql(
+          `UPDATE auth_sessions SET expires_at = ${expiry} WHERE user_id = '${second.user.id}'`,
+        );
+        const refreshed = await post(
+          'refresh',
+          { refreshToken: second.refreshToken },
+          '192.0.2.31',
+        );
+        assert.equal(refreshed.status, 200);
+        const rotated = await refreshed.json();
+        assert.ok(rotated.expiresIn > 0 && rotated.expiresIn <= 60);
+        assert.equal(
+          rotated.refreshTokenExpiresAt,
+          new Date(expiry).toISOString(),
+        );
+        assert.equal((await access(second.accessToken)).status, 200);
+        assert.equal((await access(rotated.accessToken)).status, 200);
+        assert.equal(
+          (
+            await post(
+              'refresh',
+              { refreshToken: second.refreshToken },
+              '192.0.2.31',
+            )
+          ).status,
+          401,
+        );
+        // Replaying the old refresh must not revoke its successful replacement.
+        const next = await post(
+          'refresh',
+          { refreshToken: rotated.refreshToken },
+          '192.0.2.31',
+        );
+        assert.equal(next.status, 200);
+        const final = await next.json();
+        assert.equal(
+          final.refreshTokenExpiresAt,
+          rotated.refreshTokenExpiresAt,
+        );
+        sql(
+          `UPDATE auth_sessions SET expires_at = 1 WHERE user_id = '${second.user.id}'`,
+        );
+        assert.equal((await access(final.accessToken)).status, 401);
+        assert.equal(
+          (
+            await post(
+              'refresh',
+              { refreshToken: final.refreshToken },
+              '192.0.2.31',
+            )
+          ).status,
+          401,
+        );
+        sql('ALTER TABLE auth_sessions RENAME TO unavailable_sessions');
+        try {
+          assert.equal((await access(final.accessToken)).status, 503);
+        } finally {
+          sql('ALTER TABLE unavailable_sessions RENAME TO auth_sessions');
+        }
       },
     );
     await t.test(
@@ -344,7 +531,91 @@ await test(
           message: 'API unavailable',
         });
         assert.equal(response.headers.get('cache-control'), 'no-store');
-        assert.ok(!output.includes('test-only-no-email-sending'));
+        assert.ok(
+          !output.includes('test-only-secret-at-least-thirty-two-bytes'),
+        );
+        assert.equal(
+          (await fetch(`${origin}/docs/js/scalar.js`)).status,
+          200,
+          'assets do not require Nest startup',
+        );
+      },
+    );
+    await t.test(
+      'production entrypoint exposes no fixture routes',
+      async () => {
+        const exited = once(worker, 'exit');
+        worker.kill('SIGTERM');
+        await exited;
+        config.main = resolve('dist/worker/main.js');
+        config.vars.EMAIL_FROM = 'noreply@rebirthdungeon.com';
+        await writeFile(configFile, JSON.stringify(config));
+        worker = spawn(
+          wrangler,
+          [
+            'dev',
+            '--config',
+            configFile,
+            '--local',
+            '--port',
+            String(port),
+            '--persist-to',
+            persist,
+          ],
+          { stdio: ['ignore', 'pipe', 'pipe'] },
+        );
+        output = '';
+        worker.stdout.on('data', (chunk) => {
+          output += chunk;
+        });
+        worker.stderr.on('data', (chunk) => {
+          output += chunk;
+        });
+        let response;
+        for (let i = 0; i < 40; i++) {
+          try {
+            response = await fetch(`${origin}/openapi.json`, {
+              signal: AbortSignal.timeout(2000),
+            });
+            if (response.ok) break;
+          } catch {}
+          if (worker.exitCode !== null) break;
+          await setTimeout(100);
+        }
+        assert.equal(response?.status, 200, output.slice(-12000));
+        const document = await response.json();
+        assert.deepEqual(Object.keys(document.paths).sort(), [
+          '/auth/login',
+          '/auth/refresh',
+          '/auth/register',
+        ]);
+        // Missing routes may be rejected by the global auth guard before Nest's 404 handler.
+        // Check with a valid session so authorization cannot conceal an exposed test endpoint.
+        const login = await post(
+          'login',
+          { email: 'existing@example.com', password },
+          '192.0.2.99',
+        );
+        assert.equal(login.status, 200);
+        const { accessToken } = await login.json();
+        for (const path of [
+          '/__test/send-email',
+          '/__test/render-email',
+          '/__test/kv',
+          '/__test/protected',
+          '/query',
+          '/cache',
+        ]) {
+          assert.equal(
+            (
+              await fetch(`${origin}${path}`, {
+                headers: { authorization: `Bearer ${accessToken}` },
+              })
+            ).status,
+            404,
+          );
+        }
+        assert.equal((await post('register', {}, '192.0.2.100')).status, 400);
       },
     );
   },

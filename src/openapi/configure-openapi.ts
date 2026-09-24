@@ -3,15 +3,9 @@ import type { Express } from 'express';
 import { apiReference } from '@scalar/express-api-reference';
 import { configureDocument } from './configure-document.js';
 
-export function configureOpenApi(
-  app: NestExpressApplication,
-  scalarScript: string,
-): void {
+export function configureOpenApi(app: NestExpressApplication): void {
   configureDocument(app);
   const server: Express = app.getHttpAdapter().getInstance();
-  server.get('/docs/js/scalar.js', (_request, response) => {
-    response.type('application/javascript').send(scalarScript);
-  });
   const reference = apiReference({
     title: 'Rebirth Dungeon API',
     pageTitle: 'Rebirth Dungeon API',

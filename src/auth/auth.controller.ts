@@ -9,7 +9,7 @@ import {
   Post,
   UseGuards,
 } from '@nestjs/common';
-import { Throttle, ThrottlerGuard } from '@nestjs/throttler';
+import { AuthRateLimitGuard, RefreshRateLimit } from './rate-limit.guard.js';
 import { AuthService } from './auth.service.js';
 import {
   credentialsSchema,
@@ -23,7 +23,7 @@ import { Public } from './public.decorator.js';
 @ApiTags('Authentication')
 @ApiAuthErrors()
 @Public()
-@UseGuards(ThrottlerGuard)
+@UseGuards(AuthRateLimitGuard)
 @Controller('auth')
 export class AuthController {
   constructor(@Inject(AuthService) private readonly auth: AuthService) {}
@@ -32,7 +32,7 @@ export class AuthController {
     operationId: 'register',
     security: [],
     description:
-      'Atomically creates a user and session. Email is normalized and must be unique. Limit: 10 requests per IP per minute.',
+      'Atomically creates a user and session. Email is normalized and must be unique. Limit: 10 requests per IP per minute per Cloudflare location (approximate).',
   })
   @ApiBody({ required: true, schema: schemaRef('Credentials') })
   @ApiResponse({
@@ -60,7 +60,7 @@ export class AuthController {
     operationId: 'login',
     security: [],
     description:
-      'Replaces the active session, invalidating previous access and refresh tokens. Limit: 10 requests per IP per minute.',
+      'Replaces the active session, invalidating previous access and refresh tokens. Limit: 10 requests per IP per minute per Cloudflare location (approximate).',
   })
   @ApiBody({ required: true, schema: schemaRef('Credentials') })
   @ApiResponse({
@@ -88,7 +88,7 @@ export class AuthController {
     operationId: 'refresh',
     security: [],
     description:
-      'Exchanges the current refresh token for a new token pair. Preserves session ID and absolute expiry. Only one concurrent use succeeds; replay returns 401. If the response is lost, sign in again. Limit: 30 requests per IP per minute.',
+      'Exchanges the current refresh token for a new token pair. Preserves session ID and absolute expiry. Only one concurrent use succeeds; replay returns 401. If the response is lost, sign in again. Limit: 30 requests per IP per minute per Cloudflare location (approximate).',
   })
   @ApiBody({ required: true, schema: schemaRef('RefreshRequest') })
   @ApiResponse({
@@ -106,7 +106,7 @@ export class AuthController {
   })
   @Post('refresh')
   @HttpCode(200)
-  @Throttle({ default: { limit: 30, ttl: 60000 } })
+  @RefreshRateLimit()
   @Header('Cache-Control', 'no-store')
   refresh(@Body(new ZodValidationPipe(refreshSchema)) dto: RefreshDto) {
     return this.auth.refresh(dto.refreshToken);

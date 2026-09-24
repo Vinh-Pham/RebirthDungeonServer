@@ -1,13 +1,15 @@
 import {
   ConflictException,
+  Inject,
   Injectable,
   ServiceUnavailableException,
 } from '@nestjs/common';
-import { InjectDrizzle } from '@nestjs/drizzle';
 import { and, eq, gt } from 'drizzle-orm';
-import type { D1Database } from '../db/d1-proxy.js';
 import type { DrizzleD1Database } from 'drizzle-orm/d1';
-import { D1ProxyError } from '../db/d1-proxy.js';
+import {
+  PRIMARY_DATABASE,
+  type PrimaryDatabaseFactory,
+} from '../db/primary-database.js';
 import { authSessions, users } from '../db/schema.js';
 
 export type User = typeof users.$inferSelect;
@@ -16,17 +18,18 @@ export type Session = typeof authSessions.$inferSelect;
 @Injectable()
 export class AuthRepository {
   constructor(
-    @InjectDrizzle() private readonly db: D1Database | DrizzleD1Database,
+    @Inject(PRIMARY_DATABASE) private readonly database: PrimaryDatabaseFactory,
   ) {}
 
-  private async query<T>(operation: () => Promise<T>): Promise<T> {
+  private async query<T>(
+    operation: (db: DrizzleD1Database) => Promise<T>,
+  ): Promise<T> {
     try {
-      return await operation();
+      return await operation(this.database());
     } catch (error) {
       let cause: unknown = error;
       for (let i = 0; i < 8 && cause instanceof Error; i++) {
         if (
-          (cause instanceof D1ProxyError && cause.code === 'EMAIL_EXISTS') ||
           /UNIQUE constraint failed: users\.email(?:\b|$)/.test(cause.message)
         ) {
           throw new ConflictException('Email already registered');
@@ -41,23 +44,23 @@ export class AuthRepository {
 
   findUser(email: string) {
     return this.query(
-      async () =>
-        (await this.db.select().from(users).where(eq(users.email, email)))[0],
+      async (db) =>
+        (await db.select().from(users).where(eq(users.email, email)))[0],
     );
   }
 
   register(user: User, session: Session) {
-    return this.query(() =>
-      this.db.batch([
-        this.db.insert(users).values(user),
-        this.db.insert(authSessions).values(session),
+    return this.query((db) =>
+      db.batch([
+        db.insert(users).values(user),
+        db.insert(authSessions).values(session),
       ]),
     );
   }
 
   replaceSession(session: Session) {
-    return this.query(() =>
-      this.db
+    return this.query((db) =>
+      db
         .insert(authSessions)
         .values(session)
         .onConflictDoUpdate({
@@ -70,9 +73,9 @@ export class AuthRepository {
 
   findRefresh(hash: string) {
     return this.query(
-      async () =>
+      async (db) =>
         (
-          await this.db
+          await db
             .select({ user: users, session: authSessions })
             .from(authSessions)
             .innerJoin(users, eq(users.id, authSessions.userId))
@@ -87,8 +90,8 @@ export class AuthRepository {
   }
 
   rotate(oldHash: string, newHash: string) {
-    return this.query(() =>
-      this.db
+    return this.query((db) =>
+      db
         .update(authSessions)
         .set({ refreshTokenHash: newHash, updatedAt: new Date() })
         .where(
@@ -103,9 +106,9 @@ export class AuthRepository {
 
   activeSession(userId: string, sessionId: string) {
     return this.query(
-      async () =>
+      async (db) =>
         (
-          await this.db
+          await db
             .select({ userId: authSessions.userId })
             .from(authSessions)
             .where(

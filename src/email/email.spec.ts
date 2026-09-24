@@ -1,19 +1,13 @@
 import { Logger } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { CloudflareEmailTransport } from './cloudflare-email.transport.js';
-import { emailConfig, type EmailConfig } from './email.config.js';
+import { emailConfig } from './email.config.js';
 import { EmailSendError } from './email.error.js';
 import { EmailModule } from './email.module.js';
 import { EmailService } from './email.service.js';
-import { EMAIL_TRANSPORT } from './email.transport.js';
 import type { EmailMessage } from './email.schemas.js';
 
-const config: EmailConfig = {
-  accountId: 'a'.repeat(32),
-  apiToken: 'secret-token',
-  from: 'noreply@rebirthdungeon.com',
-  fromName: 'Rebirth Dungeon',
-};
+const config = emailConfig({ from: 'noreply@rebirthdungeon.com' });
 const message: EmailMessage = {
   to: 'recipient@example.com',
   subject: 'Private subject',
@@ -21,233 +15,137 @@ const message: EmailMessage = {
   html: '<p>Private html</p>',
   replyTo: 'support@example.com',
 };
-const emptyResult = {
-  delivered: [],
-  queued: [],
-  permanentBounces: [],
-  suppressedRecipients: [],
-};
-function configureEnv() {
-  vi.stubEnv('CLOUDFLARE_ACCOUNT_ID', config.accountId);
-  vi.stubEnv('CLOUDFLARE_EMAIL_API_TOKEN', config.apiToken);
-  vi.stubEnv('EMAIL_FROM', config.from);
-  vi.stubEnv('EMAIL_FROM_NAME', undefined);
-}
-function providerResult(result: Record<string, unknown> = {}) {
+const accepted = { status: 'accepted', messageId: 'provider-id' };
+function fixture() {
+  const send = vi
+    .fn<
+      (
+        message: globalThis.EmailMessage | EmailMessageBuilder,
+      ) => ReturnType<SendEmail['send']>
+    >()
+    .mockResolvedValue({ messageId: 'provider-id' });
   return {
-    success: true,
-    result: {
-      delivered: [],
-      queued: [],
-      permanent_bounces: [],
-      suppressed_recipients: [],
-      ...result,
-    },
+    send,
+    transport: new CloudflareEmailTransport(config, { client: { send } }),
   };
 }
-
 afterEach(() => {
   vi.restoreAllMocks();
-  vi.unstubAllGlobals();
-  vi.unstubAllEnvs();
+  vi.useRealTimers();
 });
 
-describe('Email module configuration', () => {
-  beforeEach(configureEnv);
+describe('Email binding', () => {
   it.each([
-    'CLOUDFLARE_ACCOUNT_ID',
-    'CLOUDFLARE_EMAIL_API_TOKEN',
-    'EMAIL_FROM',
-  ])('fails module startup without %s', async (name) => {
-    vi.stubEnv(name, undefined);
-    await expect(
-      Test.createTestingModule({ imports: [EmailModule] }).compile(),
-    ).rejects.toMatchObject({ code: 'CONFIGURATION' });
+    {},
+    { from: 'invalid' },
+    { from: config.from, fromName: 'private\r\nheader' },
+  ])('rejects invalid configuration without exposing it', (input) => {
+    expect(() => emailConfig(input)).toThrow(
+      'Email configuration is missing or invalid',
+    );
   });
-  it.each([
-    ['CLOUDFLARE_ACCOUNT_ID', 'invalid'],
-    ['CLOUDFLARE_EMAIL_API_TOKEN', 'token\nsecret'],
-    ['EMAIL_FROM', 'invalid'],
-    ['EMAIL_FROM_NAME', 'name\r\nheader'],
-  ])('rejects invalid %s without exposing its value', (name, value) => {
-    vi.stubEnv(name, value);
-    expect(emailConfig).toThrow('Email configuration is missing or invalid');
-  });
-  it('starts without network requests and exports a service with injectable transport', async () => {
-    const fetchMock = vi.fn();
-    vi.stubGlobal('fetch', fetchMock);
-    const send = vi
-      .fn()
-      .mockResolvedValue({ ...emptyResult, queued: [message.to] });
-    const module = await Test.createTestingModule({ imports: [EmailModule] })
-      .overrideProvider(EMAIL_TRANSPORT)
-      .useValue({ send })
-      .compile();
-    vi.spyOn(Logger.prototype, 'log').mockImplementation(() => {});
+  it('starts without sending and exports the configured service', async () => {
+    const { send } = fixture();
+    const binding = new Proxy(
+      { send },
+      {
+        get(target, key) {
+          if (key === 'send') return target.send;
+          throw new Error(
+            'Nest must not probe native binding lifecycle methods',
+          );
+        },
+      },
+    );
+    const module = await Test.createTestingModule({
+      imports: [EmailModule.register(config, binding)],
+    }).compile();
     try {
       await module.init();
-      expect(emailConfig().fromName).toBe('Rebirth Dungeon');
-      await expect(
-        module.get(EmailService).send(message),
-      ).resolves.toMatchObject({ queued: [message.to] });
-      expect(send).toHaveBeenCalledOnce();
-      expect(fetchMock).not.toHaveBeenCalled();
+      expect(send).not.toHaveBeenCalled();
+      expect(module.get(EmailService)).toBeInstanceOf(EmailService);
+      expect(config.fromName).toBe('Rebirth Dungeon');
     } finally {
       await module.close();
     }
   });
-});
-
-describe('Cloudflare email transport', () => {
-  const transport = new CloudflareEmailTransport(config);
-  it('maps sender, reply-to and credentials and uses a 10 second timeout', async () => {
-    const timeout = vi.spyOn(AbortSignal, 'timeout');
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValue(
-        Response.json(
-          providerResult({ queued: [message.to], message_id: 'provider-id' }),
-        ),
-      );
-    vi.stubGlobal('fetch', fetchMock);
-    await expect(transport.send(message)).resolves.toEqual({
-      ...emptyResult,
-      queued: [message.to],
-      messageId: 'provider-id',
-    });
-    const [url, options] = fetchMock.mock.calls[0] as [string, RequestInit];
-    expect(url).toBe(
-      `https://api.cloudflare.com/client/v4/accounts/${config.accountId}/email/sending/send`,
-    );
-    expect(options.headers).toEqual({
-      Authorization: 'Bearer secret-token',
-      'Content-Type': 'application/json',
-    });
-    expect(options.method).toBe('POST');
-    expect(JSON.parse(options.body as string)).toEqual({
-      from: { address: config.from, name: config.fromName },
-      to: message.to,
-      subject: message.subject,
-      text: message.text,
-      html: message.html,
-      reply_to: message.replyTo,
-    });
-    expect(timeout).toHaveBeenCalledWith(10000);
-  });
-  it.each([
-    ['delivered', 'delivered'],
-    ['queued', 'queued'],
-    ['permanent_bounces', 'permanentBounces'],
-    ['suppressed_recipients', 'suppressedRecipients'],
-  ])('preserves %s outcomes', async (providerField, field) => {
-    vi.stubGlobal(
-      'fetch',
-      vi
-        .fn()
-        .mockResolvedValue(
-          Response.json(providerResult({ [providerField]: [message.to] })),
-        ),
-    );
-    const result = await transport.send(message);
-    expect(result).toEqual({ ...emptyResult, [field]: [message.to] });
-  });
-  it('supports older success responses without optional fields', async () => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn().mockResolvedValue(
-        Response.json({
-          success: true,
-          result: {
-            delivered: [message.to],
-            queued: [],
-            permanent_bounces: [],
-          },
-        }),
-      ),
-    );
-    await expect(transport.send(message)).resolves.toEqual({
-      ...emptyResult,
-      delivered: [message.to],
+  it('maps the structured binding payload and returns acceptance, not delivery', async () => {
+    const { send, transport } = fixture();
+    await expect(transport.send(message)).resolves.toEqual(accepted);
+    expect(send).toHaveBeenCalledExactlyOnceWith({
+      ...message,
+      from: { email: config.from, name: config.fromName },
     });
   });
   it.each([
-    [400, 'REJECTED'],
-    [401, 'AUTHORIZATION'],
-    [403, 'AUTHORIZATION'],
-    [429, 'RATE_LIMITED'],
-    [500, 'PROVIDER_FAILURE'],
-    [503, 'PROVIDER_FAILURE'],
-    [200, 'PROVIDER_FAILURE'],
-  ])(
-    'classifies HTTP %s with no retries or provider text exposure',
-    async (status, code) => {
-      const fetchMock = vi.fn().mockResolvedValue(
-        Response.json(
-          {
-            success: false,
-            errors: [
-              { code: 10001, message: 'secret-token recipient@example.com' },
-            ],
-          },
-          { status: status as number },
-        ),
-      );
-      vi.stubGlobal('fetch', fetchMock);
-      const error = await transport
-        .send(message)
-        .catch((error: unknown) => error);
-      expect(error).toMatchObject({ code, providerCodes: [10001], status });
-      expect(String(error)).not.toContain('secret-token');
-      expect(error).not.toHaveProperty('cause');
-      expect(fetchMock).toHaveBeenCalledOnce();
-    },
-  );
-  it.each([
-    {},
-    providerResult(),
-    providerResult({ delivered: 'wrong' }),
-    providerResult({ queued: ['someone-else@example.com'] }),
-  ])('treats unusable successful responses as uncertain', async (body) => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(Response.json(body)));
+    ['E_SENDER_NOT_VERIFIED', 'AUTHORIZATION'],
+    ['E_SENDER_DOMAIN_NOT_AVAILABLE', 'AUTHORIZATION'],
+    ['E_RATE_LIMIT_EXCEEDED', 'RATE_LIMITED'],
+    ['E_DAILY_LIMIT_EXCEEDED', 'RATE_LIMITED'],
+    ['E_RECIPIENT_SUPPRESSED', 'REJECTED'],
+    ['E_DELIVERY_FAILED', 'REJECTED'],
+    ['E_VALIDATION_ERROR', 'REJECTED'],
+    ['E_INTERNAL_SERVER_ERROR', 'PROVIDER_FAILURE'],
+  ])('sanitizes %s without retries', async (providerCode, code) => {
+    const { send, transport } = fixture();
+    send.mockRejectedValue(
+      Object.assign(new Error('recipient@example.com Private text'), {
+        code: providerCode,
+      }),
+    );
+    const error: unknown = await transport
+      .send(message)
+      .catch((error: unknown) => error);
+    expect(error).toMatchObject({ code, providerCodes: [providerCode] });
+    expect(String(error)).not.toContain(message.to);
+    expect(error).not.toHaveProperty('cause');
+    expect(send).toHaveBeenCalledOnce();
+  });
+  it('does not log unknown provider codes', async () => {
+    const { send, transport } = fixture();
+    send.mockRejectedValue({
+      code: 'private-recipient@example.com',
+      message: 'private',
+    });
     await expect(transport.send(message)).rejects.toMatchObject({
       code: 'UNCERTAIN_OUTCOME',
-    });
-  });
-  it('preserves known HTTP failures when the provider returns non-JSON', async () => {
-    vi.stubGlobal(
-      'fetch',
-      vi
-        .fn()
-        .mockResolvedValue(
-          new Response('private upstream error', { status: 429 }),
-        ),
-    );
-    await expect(transport.send(message)).rejects.toMatchObject({
-      code: 'RATE_LIMITED',
-      status: 429,
       providerCodes: [],
     });
   });
-  it('treats malformed JSON as uncertain', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('not-json')));
+  it('rejects an empty message ID as uncertain', async () => {
+    const { send, transport } = fixture();
+    send.mockResolvedValue({ messageId: '' });
     await expect(transport.send(message)).rejects.toMatchObject({
       code: 'UNCERTAIN_OUTCOME',
     });
   });
-  it.each([
-    new TypeError('secret-token'),
-    new DOMException('Timed out', 'TimeoutError'),
-  ])('does not retry uncertain network failures', async (error) => {
-    const fetchMock = vi.fn().mockRejectedValue(error);
-    vi.stubGlobal('fetch', fetchMock);
-    await expect(transport.send(message)).rejects.toMatchObject({
+  it('times out at ten seconds, does not retry, and handles a late rejection', async () => {
+    vi.useFakeTimers();
+    const { send, transport } = fixture();
+    let rejectDelivery!: (reason: Error) => void;
+    send.mockReturnValue(
+      new Promise((_resolve, reject) => {
+        rejectDelivery = reject;
+      }),
+    );
+    const result = expect(transport.send(message)).rejects.toMatchObject({
       code: 'UNCERTAIN_OUTCOME',
     });
-    expect(fetchMock).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(10000);
+    await result;
+    rejectDelivery(new Error('late private provider failure'));
+    await Promise.resolve();
+    expect(send).toHaveBeenCalledOnce();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+  it('clears its timeout on success', async () => {
+    vi.useFakeTimers();
+    await fixture().transport.send(message);
+    expect(vi.getTimerCount()).toBe(0);
   });
 });
 
-describe('Email service validation and logging', () => {
+describe('Email validation and safe logging', () => {
   it.each([
     { ...message, to: 'invalid' },
     { ...message, subject: '\r\nInjected' },
@@ -262,34 +160,29 @@ describe('Email service validation and logging', () => {
     });
     expect(send).not.toHaveBeenCalled();
   });
-  it('logs counts and duration, never recipient or content', async () => {
+  it('logs only acceptance and duration', async () => {
     const log = vi.spyOn(Logger.prototype, 'log').mockImplementation(() => {});
-    const service = new EmailService({
-      send: vi
-        .fn()
-        .mockResolvedValue({ ...emptyResult, delivered: [message.to] }),
-    });
-    await service.send(message);
+    await new EmailService({ send: vi.fn().mockResolvedValue(accepted) }).send(
+      message,
+    );
     expect(log).toHaveBeenCalledWith({
       event: 'email_send_result',
       durationMs: expect.any(Number),
-      delivered: 1,
-      queued: 0,
-      permanentBounces: 0,
-      suppressedRecipients: 0,
+      status: 'accepted',
     });
   });
   it.each([
-    new EmailSendError('RATE_LIMITED', [10004], 429),
-    new Error('secret-token Private text recipient@example.com'),
-  ])('logs sanitized failures', async (failure) => {
+    new EmailSendError('RATE_LIMITED', ['E_RATE_LIMIT_EXCEEDED']),
+    new Error('private recipient@example.com'),
+  ])('sanitizes failures', async (failure) => {
     const warn = vi
       .spyOn(Logger.prototype, 'warn')
       .mockImplementation(() => {});
-    const service = new EmailService({
-      send: vi.fn().mockRejectedValue(failure),
-    });
-    await expect(service.send(message)).rejects.toBeInstanceOf(EmailSendError);
+    await expect(
+      new EmailService({ send: vi.fn().mockRejectedValue(failure) }).send(
+        message,
+      ),
+    ).rejects.toBeInstanceOf(EmailSendError);
     expect(warn).toHaveBeenCalledWith({
       event: 'email_send_failed',
       durationMs: expect.any(Number),
