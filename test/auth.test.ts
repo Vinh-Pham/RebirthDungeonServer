@@ -3,7 +3,7 @@ import { applyD1Migrations, reset, type D1Migration } from 'cloudflare:test';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { sign, decode } from 'hono/jwt';
 import { createHmac } from 'node:crypto';
-import app from '../src/index.js';
+import { app } from '../src/index.js';
 import { createRepository } from '../src/db/repository.js';
 import { hashRefreshToken, newRefreshToken } from '../src/auth/tokens.js';
 import {
@@ -567,7 +567,7 @@ describe('authentication in Workers with local D1', () => {
     ).toBe(0);
   });
 
-  it('provides OpenAPI schemas and Scalar docs for all five endpoints', async () => {
+  it('provides OpenAPI schemas and Scalar docs for authentication and queues', async () => {
     const response = await request('/openapi.json');
     expect(response.status).toBe(200);
     const document = await response.json<{
@@ -580,6 +580,7 @@ describe('authentication in Workers with local D1', () => {
       '/auth/me',
       '/auth/refresh',
       '/auth/register',
+      '/queues/example',
     ]);
     expect(document.components.schemas).toHaveProperty('AuthResponse');
     const docs = await request('/docs');
@@ -640,9 +641,10 @@ describe('authentication in Workers with local D1', () => {
     expect(html).toMatch(/"persistAuth"\s*:\s*false/);
   });
 
-  it('keeps all documented request and response examples valid', async () => {
+  it('keeps all documented authentication request and response examples valid', async () => {
     const spec = await document();
     for (const [path, methods] of Object.entries(spec.paths)) {
+      if (!path.startsWith('/auth/')) continue;
       for (const operation of Object.values(methods)) {
         const body = operation.requestBody?.content['application/json'];
         if (body) {

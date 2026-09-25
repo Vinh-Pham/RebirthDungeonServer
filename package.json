@@ -10,7 +10,7 @@
     "db:check:remote": "node tools/check-remote.mjs",
     "db:migrate:remote": "node tools/migrate-remote.mjs",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run && node --test test/migrations.test.mjs",
+    "test": "vitest run && node --test test/migrations.test.mjs test/queues.integration.test.mjs",
     "test:watch": "vitest",
     "deploy:dry-run": "wrangler deploy --dry-run --outdir dist",
     "format": "prettier --write src test tools *.ts *.json *.jsonc README.md",

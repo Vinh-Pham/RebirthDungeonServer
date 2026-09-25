@@ -122,3 +122,36 @@ The smoke test permits loopback HTTP only and deletes its own synthetic account 
 Before a production release, verify migration history, review any pending SQL, confirm the existing Worker secret and bindings, and benchmark password hashing against the deployed Worker's CPU budget. Run `pnpm deploy` only when ready to publish. Logs and sampled traces are enabled. This implementation has not deployed or modified production data or secrets.
 
 Password reset, email verification, OAuth, and game-client integration are outside this setup.
+
+## Background jobs with Cloudflare Queues
+
+The same Worker serves HTTP and consumes `rebirth-dungeon-jobs` through the `APP_QUEUE` binding. `pnpm dev` simulates both locally; no remote queue is required for local development.
+
+In Scalar, sign in, paste the access token into **Bearer Token**, and open **Queues → Enqueue an example background job**. Send:
+
+```json
+{ "message": "Hello from the game client" }
+```
+
+`POST /queues/example` returns `202` with `{ "jobId": "<UUID>", "status": "queued" }` only after publication succeeds. This means accepted, not completed. Find `queue_job_completed` in the local terminal or Worker logs, matching `jobId` or the response's `X-Request-Id`. The example has no persistent side effects and does not log the message text. It has no job-status endpoint.
+
+The endpoint requires a current authenticated session, rejects unknown fields, limits messages to 1–256 characters and request bodies to 4 KiB, and allows approximately 10 requests per user per minute per Cloudflare location. A throttled request returns `429` with `Retry-After: 60`. Queue or limiter failures return `503`; all responses include `Cache-Control: no-store` and `X-Request-Id`. Authentication errors retain the existing API error format. Logout does not cancel work already accepted.
+
+The consumer handles messages individually in batches of up to 10, waiting at most five seconds to fill a batch. Success is acknowledged; processing failures and invalid messages retry up to three times with a 30-second delay, then move to `rebirth-dungeon-jobs-dlq`. Structured failure logs include a safe category and queue message ID; valid jobs also include the job ID, request ID, and type. Raw payloads and exception details are excluded.
+
+Delivery is at least once, ordering is not guaranteed, and duplicate deliveries may create duplicate completion logs. Repeating an HTTP submission creates a new job. Even a publication error can have an uncertain outcome: a retry may enqueue a duplicate. Before implementing state-changing jobs, add idempotent processing using the stable job ID and a transaction or downstream idempotency key. Do not assume queue publication is atomic with a D1 write.
+
+To add a job type, extend the versioned Zod envelope and inferred type, provide a typed producer, add a consumer dispatch case, and test validation, duplicate delivery, and retry behavior. Queue inputs are validated again at consumption, including jobs submitted outside this API. Never put passwords or access/refresh tokens in job payloads.
+
+### Remote setup and failure investigation
+
+Before a future deployment, create the queues in the intended Cloudflare account:
+
+```sh
+pnpm exec wrangler queues create rebirth-dungeon-jobs
+pnpm exec wrangler queues create rebirth-dungeon-jobs-dlq
+```
+
+These are remote resource commands; ordinary local development and tests do not run them. The queue consumer configuration and rate-limit binding are deployed with the Worker. No database migration is required.
+
+The dead-letter queue has no automatic consumer. Inspect it in the Cloudflare dashboard and correlate failed message IDs with `queue_job_failed` logs. Check backlog, retry counts, message age, and the DLQ during operations. Messages expire according to the queue's retention setting, so investigate promptly. Fix the cause before manually resubmitting a validated job to the main queue; preserve its job ID and account for duplicate processing. This integration adds no automatic replay or purge operation.

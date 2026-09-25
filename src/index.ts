@@ -4,9 +4,11 @@ import { secureHeaders } from 'hono/secure-headers';
 import { authRoutes } from './auth/routes.js';
 import { authenticationGuide } from './auth/documentation.js';
 import { handleError } from './errors.js';
+import { queueRoutes } from './queues/routes.js';
+import { consumeJobs } from './queues/consumer.js';
 import type { AppEnv } from './env.js';
 
-const app = new OpenAPIHono<AppEnv>();
+export const app = new OpenAPIHono<AppEnv>();
 app.use('*', secureHeaders());
 app.use('*', async (c, next) => {
   const requestId = crypto.randomUUID();
@@ -34,6 +36,7 @@ app.notFound((c) =>
 );
 app.get('/', (c) => c.text('Hello Hono!'));
 app.route('/auth', authRoutes);
+app.route('/queues', queueRoutes);
 app.openAPIRegistry.registerComponent('securitySchemes', 'bearerAuth', {
   type: 'http',
   scheme: 'bearer',
@@ -53,6 +56,11 @@ app.doc31('/openapi.json', {
   ],
   tags: [
     {
+      name: 'Queues',
+      description:
+        'Asynchronous jobs with at-least-once delivery. The example records completion in Worker logs.',
+    },
+    {
       name: 'Authentication',
       description:
         'Email/password authentication with short-lived JWT access tokens and rotating opaque refresh tokens.',
@@ -68,4 +76,9 @@ app.get(
   }),
 );
 
-export default app;
+export default {
+  fetch: app.fetch,
+  async queue(batch: MessageBatch<unknown>): Promise<void> {
+    await consumeJobs(batch);
+  },
+} satisfies ExportedHandler<CloudflareBindings>;

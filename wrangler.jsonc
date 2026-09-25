@@ -12,8 +12,26 @@
       "remote": false,
     },
   ],
+  "queues": {
+    "producers": [{ "binding": "APP_QUEUE", "queue": "rebirth-dungeon-jobs" }],
+    "consumers": [
+      {
+        "queue": "rebirth-dungeon-jobs",
+        "max_batch_size": 10,
+        "max_batch_timeout": 5,
+        "max_retries": 3,
+        "retry_delay": 30,
+        "dead_letter_queue": "rebirth-dungeon-jobs-dlq",
+      },
+    ],
+  },
   "secrets": { "required": ["JWT_ACCESS_SECRET"] },
   "ratelimits": [
+    {
+      "name": "QUEUE_RATE_LIMIT",
+      "namespace_id": "2026092401",
+      "simple": { "limit": 10, "period": 60 },
+    },
     {
       "name": "AUTH_RATE_LIMIT",
       "namespace_id": "2026092301",
