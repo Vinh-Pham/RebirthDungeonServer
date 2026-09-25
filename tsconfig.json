@@ -8,13 +8,17 @@
     "noEmit": true,
     "lib": ["ES2022"],
     "types": ["node", "@cloudflare/vitest-plugin/types"],
-    "esModuleInterop": true
+    "esModuleInterop": true,
+    "jsx": "react-jsx"
   },
   "include": [
     "src/**/*.ts",
     "test/**/*.ts",
     "worker-configuration.d.ts",
     "vitest.config.ts",
-    "drizzle.config.ts"
+    "drizzle.config.ts",
+    "src/**/*.tsx",
+    "test/**/*.tsx",
+    "tools/**/*.ts"
   ]
 }

@@ -5,3 +5,6 @@ dist/
 drizzle/
 worker-configuration.d.ts
 pnpm-lock.yaml
+
+# React Email preview output
+.react-email/

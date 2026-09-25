@@ -155,3 +155,36 @@ pnpm exec wrangler queues create rebirth-dungeon-jobs-dlq
 These are remote resource commands; ordinary local development and tests do not run them. The queue consumer configuration and rate-limit binding are deployed with the Worker. No database migration is required.
 
 The dead-letter queue has no automatic consumer. Inspect it in the Cloudflare dashboard and correlate failed message IDs with `queue_job_failed` logs. Check backlog, retry counts, message age, and the DLQ during operations. Messages expire according to the queue's retention setting, so investigate promptly. Fix the cause before manually resubmitting a validated job to the main queue; preserve its job ID and account for duplicate processing. This integration adds no automatic replay or purge operation.
+
+## Email templates and test sending
+
+React Email templates live in `src/email/templates`. The example uses the subject **Rebirth Dungeon — Test email**, a personalized greeting, and a “no action required” notice. The shared renderer creates both HTML and plain text. The reusable `sendTestEmail(env, input)` service uses Cloudflare's structured `EMAIL.send()` binding and returns its message ID; no HTTP endpoint or queue job sends email automatically.
+
+```sh
+pnpm email:dev
+```
+
+Open [the template preview](http://localhost:3000) and select `test-email`. Previewing never sends email. Use the project command below for Cloudflare sending; the preview UI’s Send button is not configured for Cloudflare.
+
+To render and exercise the sending service with local simulation:
+
+```sh
+pnpm email:test --to preview@example.com
+pnpm email:test --to preview@example.com --name Adventurer
+```
+
+Simulation is the default and does not deliver mail. It explicitly disables remote bindings and uses disposable local state. Wrangler may print the example message and save local preview files; avoid sensitive template content during local testing.
+
+To send **one real email** to an inbox you control:
+
+```sh
+pnpm email:test --to YOUR_REAL_ADDRESS --name Adventurer --send
+```
+
+The explicit `--send` option invokes the installed Wrangler Email Sending command using your existing Cloudflare authentication and the same rendered HTML and plain text. It sends immediately and reports Cloudflare's result; acceptance does not confirm inbox delivery. Failures exit nonzero. There are no automatic retries because an uncertain failure may already have accepted the message. Use `pnpm email:test --help` for command usage.
+
+The sender defaults to **Rebirth Dungeon <noreply@rebirthdungeon.com>**. `rebirthdungeon.com` already has Email Sending enabled. To change the sender, update `EMAIL_FROM`, `EMAIL_FROM_NAME`, and `send_email.allowed_sender_addresses` in `wrangler.jsonc`, then run `pnpm cf-typegen`. The new sender's domain must be enabled for Cloudflare Email Sending. Local `.dev.vars` overrides are applied by Wrangler's simulation; live CLI sends use the sender configured in `wrangler.jsonc`.
+
+The `EMAIL` binding has `remote: false`, so ordinary local development simulates delivery. On a deployed Worker it uses Cloudflare Email Sending, with no separate API key required. Live command testing does not deploy the Worker or change DNS. If sending is rejected, check Wrangler's account authentication, sender-domain status, recipient restrictions/suppression, and provider limits in Cloudflare Email Sending. Application service errors are sanitized; use Cloudflare's email logs to investigate provider details.
+
+The initial verification uses simulation only. Authentication, signup behavior, queues, and the database are unchanged; there are no password-reset, inbound email, or marketing flows.
