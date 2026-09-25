@@ -4,7 +4,7 @@ Hono on Cloudflare Workers, with Cloudflare D1, Drizzle ORM, and JWT authenticat
 
 ## Local setup
 
-Use Node.js 22 or later and pnpm. From this directory:
+Use Node.js 22 or later and pnpm 10.11.1 (pinned in `package.json`). From this directory:
 
 ```sh
 pnpm install
@@ -188,3 +188,7 @@ The sender defaults to **Rebirth Dungeon <noreply@rebirthdungeon.com>**. `rebirt
 The `EMAIL` binding has `remote: false`, so ordinary local development simulates delivery. On a deployed Worker it uses Cloudflare Email Sending, with no separate API key required. Live command testing does not deploy the Worker or change DNS. If sending is rejected, check Wrangler's account authentication, sender-domain status, recipient restrictions/suppression, and provider limits in Cloudflare Email Sending. Application service errors are sanitized; use Cloudflare's email logs to investigate provider details.
 
 The initial verification uses simulation only. Authentication, signup behavior, queues, and the database are unchanged; there are no password-reset, inbound email, or marketing flows.
+
+### Cloudflare build dependency installation
+
+The project pins pnpm 10.11.1 to match the Cloudflare Workers build image. Keep `pnpm-workspace.yaml` and the single-document `pnpm-lock.yaml` committed. Use `pnpm install --frozen-lockfile` to verify the build installation locally. If you have configured a `PNPM_VERSION` build variable, set it to `10.11.1` as well. Avoid rewriting this lockfile with a different pnpm major version; upgrade the local and Cloudflare versions together.
