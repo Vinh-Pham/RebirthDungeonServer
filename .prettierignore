@@ -1,0 +1,7 @@
+node_modules/
+dist/
+.wrangler/
+.firecrawl/
+drizzle/
+worker-configuration.d.ts
+pnpm-lock.yaml

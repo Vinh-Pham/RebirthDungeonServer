@@ -1,100 +1,33 @@
-// Optional Nest integrations are deliberately unavailable; keep these aliases fail-fast.
-// The synthetic URL only initializes unused Nest optional filesystem loaders.
 {
+  "$schema": "node_modules/wrangler/config-schema.json",
   "name": "rebirth-dungeon-server",
-  "main": "dist/worker/main.js",
-  "define": {
-    "import.meta.url": "\"file:///worker/main.js\"",
-  },
-  "alias": {
-    "@fastify/static": "./dist/worker/unsupported-package.js",
-    "class-validator": "./dist/worker/unsupported-package.js",
-    "class-transformer": "./dist/worker/unsupported-package.js",
-    "@nestjs/microservices": "./dist/worker/unsupported-package.js",
-    "@nestjs/microservices/microservices-module.js": "./dist/worker/unsupported-package.js",
-    "@nestjs/websockets/socket-module.js": "./dist/worker/unsupported-package.js",
-  },
-  "build": {
-    "command": "npm run build",
-  },
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-24",
   "compatibility_flags": ["nodejs_compat"],
-  "vars": {
-    "EMAIL_FROM": "noreply@rebirthdungeon.com",
-    "EMAIL_FROM_NAME": "Rebirth Dungeon",
-  },
-  "compatibility_date": "2026-09-23",
-  "triggers": { "crons": ["* * * * *"] },
-  "queues": {
-    "producers": [
-      { "binding": "EXAMPLE_QUEUE", "queue": "rebirth-dungeon-example" },
-    ],
-    "consumers": [
-      {
-        "queue": "rebirth-dungeon-example",
-        "max_batch_size": 10,
-        "max_batch_timeout": 1,
-        "max_retries": 3,
-        "retry_delay": 5,
-        "dead_letter_queue": "rebirth-dungeon-example-dlq",
-      },
-    ],
-  },
-  "kv_namespaces": [
-    {
-      "binding": "CACHE",
-      "id": "527ce37364ca4e3d8e2974fda76e3b4f",
-    },
-  ],
   "d1_databases": [
     {
       "binding": "DB",
       "database_name": "rebirth-dungeon",
       "database_id": "b8b044ef-47f2-4dec-9a13-11ce5c2ee31e",
+      "remote": false,
     },
   ],
-  "secrets": {
-    "required": ["JWT_ACCESS_SECRET"],
-  },
-  "observability": {
-    "enabled": true,
-    "logs": {
-      "enabled": true,
-      "head_sampling_rate": 1,
-    },
-    "traces": {
-      "enabled": true,
-      "head_sampling_rate": 0.01,
-    },
-  },
-  "assets": {
-    "directory": "./dist/assets",
-  },
-  "send_email": [
-    {
-      "name": "EMAIL",
-    },
-  ],
+  "secrets": { "required": ["JWT_ACCESS_SECRET"] },
   "ratelimits": [
-    {
-      "name": "QUEUE_RATE_LIMIT",
-      "namespace_id": "2026092401",
-      "simple": { "limit": 10, "period": 60 },
-    },
     {
       "name": "AUTH_RATE_LIMIT",
       "namespace_id": "2026092301",
-      "simple": {
-        "limit": 10,
-        "period": 60,
-      },
+      "simple": { "limit": 10, "period": 60 },
     },
     {
       "name": "REFRESH_RATE_LIMIT",
       "namespace_id": "2026092302",
-      "simple": {
-        "limit": 30,
-        "period": 60,
-      },
+      "simple": { "limit": 30, "period": 60 },
     },
   ],
+  "observability": {
+    "enabled": true,
+    "logs": { "enabled": true, "head_sampling_rate": 1 },
+    "traces": { "enabled": true, "head_sampling_rate": 0.01 },
+  },
 }

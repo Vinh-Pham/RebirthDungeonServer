@@ -1,5 +1,2 @@
-# Runtime secret; never commit real values.
+# Runtime secret: use at least 32 random bytes. Never commit real values.
 JWT_ACCESS_SECRET=
-# Sender defaults are in wrangler.jsonc.
-EMAIL_FROM=noreply@rebirthdungeon.com
-EMAIL_FROM_NAME=Rebirth Dungeon
