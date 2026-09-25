@@ -6,6 +6,7 @@ import { authenticationGuide } from './auth/documentation.js';
 import { handleError } from './errors.js';
 import { queueRoutes } from './queues/routes.js';
 import { consumeJobs } from './queues/consumer.js';
+import { runScheduled } from './cron/scheduled.js';
 import type { AppEnv } from './env.js';
 
 export const app = new OpenAPIHono<AppEnv>();
@@ -80,5 +81,8 @@ export default {
   fetch: app.fetch,
   async queue(batch: MessageBatch<unknown>): Promise<void> {
     await consumeJobs(batch);
+  },
+  async scheduled(controller: ScheduledController): Promise<void> {
+    await runScheduled(controller);
   },
 } satisfies ExportedHandler<CloudflareBindings>;

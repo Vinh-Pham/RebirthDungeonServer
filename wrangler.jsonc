@@ -12,6 +12,9 @@
       "remote": false,
     },
   ],
+  "triggers": {
+    "crons": ["* * * * *"],
+  },
   "queues": {
     "producers": [{ "binding": "APP_QUEUE", "queue": "rebirth-dungeon-jobs" }],
     "consumers": [
