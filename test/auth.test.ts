@@ -580,6 +580,8 @@ describe('authentication in Workers with local D1', () => {
       '/auth/me',
       '/auth/refresh',
       '/auth/register',
+      '/cache/entries',
+      '/cache/entries/{name}',
       '/queues/example',
     ]);
     expect(document.components.schemas).toHaveProperty('AuthResponse');

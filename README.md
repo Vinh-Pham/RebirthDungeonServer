@@ -1,6 +1,6 @@
 # Rebirth Dungeon API
 
-Hono on Cloudflare Workers, with Cloudflare D1, Drizzle ORM, and JWT authentication for the game client.
+Hono on Cloudflare Workers, with Cloudflare D1, Drizzle ORM, Cloudflare Workers KV, and JWT authentication for the game client.
 
 ## Local setup
 
@@ -155,6 +155,34 @@ pnpm exec wrangler queues create rebirth-dungeon-jobs-dlq
 These are remote resource commands; ordinary local development and tests do not run them. The queue consumer configuration and rate-limit binding are deployed with the Worker. No database migration is required.
 
 The dead-letter queue has no automatic consumer. Inspect it in the Cloudflare dashboard and correlate failed message IDs with `queue_job_failed` logs. Check backlog, retry counts, message age, and the DLQ during operations. Messages expire according to the queue's retention setting, so investigate promptly. Fix the cause before manually resubmitting a validated job to the main queue; preserve its job ID and account for duplicate processing. This integration adds no automatic replay or purge operation.
+
+## Key-value cache with Cloudflare Workers KV
+
+The Worker binds a KV namespace as `CACHE` (`d0807df722f14a52bff8389d97890467`) through `kv_namespaces` in `wrangler.jsonc`. `pnpm dev` and the test suite simulate KV locally with state under `.wrangler/state`; no remote namespace is required locally. The namespace was created once with `pnpm exec wrangler kv namespace create CACHE`, and deployment validates that it exists in the account before publishing.
+
+`src/kv/cache.ts` wraps the binding with `createCacheStore(kv)`, mirroring the D1 repository pattern. It provides JSON-valued `read`, `write`, `remove`, `getOrSet` (cache-aside: serve a valid cached value, otherwise run the loader and cache its result for future calls), and `listKeys` (prefixed and cursor-paginated). Reads can validate the cached shape with a Zod schema; an entry that no longer matches counts as a miss. TTLs are clamped to KV's supported range of 60 seconds to 30 days.
+
+The cache fails open: unavailable reads become misses, and failed writes or deletes return `false` so the caller can decide whether to fail closed. Failures log `cache_operation_failed` with the operation, key, and error category only — never exception details or stored values. Keys are built from prefixes such as `cache:entry:<userId>:<name>` so one namespace can serve separate domains later.
+
+In Scalar, sign in and open **Cache → Store a personal cache entry**. Send:
+
+```json
+{
+  "name": "daily-greeting",
+  "value": "Hello from the game client",
+  "ttlSeconds": 300
+}
+```
+
+`PUT /cache/entries` stores a private entry for the authenticated user and returns `200` with `{ "name": "daily-greeting", "ttlSeconds": 300, "status": "stored" }`. `GET /cache/entries/{name}` returns the entry or `404`; `DELETE /cache/entries/{name}` returns `204` and is idempotent. Names are lowercase slugs of 1–64 characters, values are 1–2048 characters, unknown fields are rejected, and bodies are limited to 4 KiB. Writes (PUT and DELETE) are limited to 30 requests per user per minute per Cloudflare location through the `CACHE_RATE_LIMIT` binding; reads are not rate limited, like `/auth/me`. All responses use `Cache-Control: no-store` and include `X-Request-Id`. Write, delete, or limiter failures return `503`; when KV is unavailable, reads fail open and return `404`.
+
+KV is eventually consistent: writes and deletes can take up to about 60 seconds to become visible everywhere, especially in other Cloudflare locations, and each key supports roughly one sustained write per second. Entries expire after their TTL. These properties make KV suitable for cached, regenerable data only — never authentication, sessions, or other read-after-write state. D1 remains the system of record, and authentication reads are not cached.
+
+### Limits and operations
+
+Cloudflare KV limits apply: keys up to 512 bytes, values up to 25 MiB, and TTLs of at least 60 seconds. Plans include daily read and write allowances; check the Cloudflare dashboard under Workers KV for current usage and pricing.
+
+Local data can be inspected or cleared with Wrangler's `--local` flag, for example `pnpm exec wrangler kv key list --namespace-id d0807df722f14a52bff8389d97890467 --local`. The same commands without `--local` use remote data and your Cloudflare account authentication; ordinary local development and tests never touch the remote namespace. To reset all local state, stop `pnpm dev` and remove `.wrangler/state`.
 
 ## Email templates and test sending
 

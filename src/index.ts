@@ -5,6 +5,7 @@ import { authRoutes } from './auth/routes.js';
 import { authenticationGuide } from './auth/documentation.js';
 import { handleError } from './errors.js';
 import { queueRoutes } from './queues/routes.js';
+import { cacheRoutes } from './kv/routes.js';
 import { consumeJobs } from './queues/consumer.js';
 import { runScheduled } from './cron/scheduled.js';
 import type { AppEnv } from './env.js';
@@ -38,6 +39,7 @@ app.notFound((c) =>
 app.get('/', (c) => c.text('Hello Hono!'));
 app.route('/auth', authRoutes);
 app.route('/queues', queueRoutes);
+app.route('/cache', cacheRoutes);
 app.openAPIRegistry.registerComponent('securitySchemes', 'bearerAuth', {
   type: 'http',
   scheme: 'bearer',
@@ -60,6 +62,11 @@ app.doc31('/openapi.json', {
       name: 'Queues',
       description:
         'Asynchronous jobs with at-least-once delivery. The example records completion in Worker logs.',
+    },
+    {
+      name: 'Cache',
+      description:
+        'Authenticated example entries in Cloudflare Workers KV with a time-to-live. KV is eventually consistent and never a source of truth.',
     },
     {
       name: 'Authentication',

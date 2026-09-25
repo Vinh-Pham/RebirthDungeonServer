@@ -12,6 +12,12 @@
       "remote": false,
     },
   ],
+  "kv_namespaces": [
+    {
+      "binding": "CACHE",
+      "id": "d0807df722f14a52bff8389d97890467",
+    },
+  ],
   "triggers": {
     "crons": ["* * * * *"],
   },
@@ -41,6 +47,11 @@
   },
   "secrets": { "required": ["JWT_ACCESS_SECRET"] },
   "ratelimits": [
+    {
+      "name": "CACHE_RATE_LIMIT",
+      "namespace_id": "2026092501",
+      "simple": { "limit": 30, "period": 60 },
+    },
     {
       "name": "QUEUE_RATE_LIMIT",
       "namespace_id": "2026092401",
